@@ -1,0 +1,226 @@
+const express = require('express')
+const bcrypt = require('bcryptjs')
+const supabase = require('../db')
+const { h, fail, clean, num, EMAIL_RE, PHONE_RE, DOC_RE, imageError, todayBogota } = require('../http')
+const { auth, ADMIN, STAFF, toUserDTO, USER_COLUMNS } = require('../auth')
+const { audit } = require('../audit')
+const { score } = require('../lib/scoring')
+
+const router = express.Router()
+const DOC_TYPES = ['CC', 'CE', 'TI', 'PA', 'PPT', 'NIT']
+const LIST_COLUMNS = 'id, doc_type, identification, name, last_name, phone, address, neighborhood, city, photo_thumb, lender_id, user_id, status, created_at, lender:users!customers_lender_id_fkey(id, name, last_name)'
+
+const fullName = (x) => (x ? `${x.name} ${x.last_name || ''}`.trim() : null)
+const toDTO = (c, extra = {}) => ({
+  id: c.id,
+  docType: c.doc_type,
+  identification: c.identification,
+  name: c.name,
+  lastName: c.last_name,
+  fullName: fullName(c),
+  phone: c.phone,
+  phone2: c.phone2 ?? null,
+  email: c.email ?? null,
+  address: c.address,
+  neighborhood: c.neighborhood,
+  city: c.city,
+  occupation: c.occupation ?? null,
+  businessAddress: c.business_address ?? null,
+  birthDate: c.birth_date ?? null,
+  photoUrl: c.photo_url ?? null,
+  photoThumb: c.photo_thumb ?? null,
+  idPhotoUrl: c.id_photo_url ?? null,
+  lat: c.lat ?? null,
+  lng: c.lng ?? null,
+  lenderId: c.lender_id,
+  lender: c.lender ? { id: c.lender.id, fullName: fullName(c.lender) } : null,
+  userId: c.user_id,
+  creditLimit: c.credit_limit === undefined || c.credit_limit === null ? null : Number(c.credit_limit),
+  status: c.status,
+  notes: c.notes ?? null,
+  createdAt: c.created_at,
+  ...extra
+})
+
+// El prestamista solo ve y edita los clientes que tiene asignados.
+const scoped = (req, q) => (req.user.role === 'prestamista' ? q.eq('lender_id', req.user.id) : q)
+const loadOne = async (req, id) => {
+  const { data } = await scoped(req, supabase.from('customers').select('*, lender:users!customers_lender_id_fkey(id, name, last_name)').eq('id', id)).maybeSingle()
+  return data
+}
+
+const validate = (b) => {
+  const errors = []
+  if (!DOC_TYPES.includes(b.docType || 'CC')) errors.push('Tipo de documento inválido')
+  if (!clean(b.identification)) errors.push('La identificación es requerida')
+  else if (!DOC_RE.test(clean(b.identification))) errors.push('Identificación no válida')
+  if (!clean(b.name)) errors.push('El nombre es requerido')
+  if (!clean(b.phone)) errors.push('El celular es requerido')
+  else if (!PHONE_RE.test(clean(b.phone))) errors.push('Celular no válido (7 a 10 dígitos)')
+  if (clean(b.phone2) && !PHONE_RE.test(clean(b.phone2))) errors.push('Teléfono 2 no válido')
+  if (clean(b.email) && !EMAIL_RE.test(clean(b.email))) errors.push('Correo no válido')
+  if (!clean(b.address)) errors.push('La dirección es requerida')
+  if (!clean(b.photoUrl)) errors.push('La foto del cliente es obligatoria')
+  for (const [k, label] of [['photoUrl', 'La foto'], ['photoThumb', 'La miniatura'], ['idPhotoUrl', 'La foto del documento']]) {
+    const e = imageError(b[k], 900); if (e) errors.push(`${label}: ${e}`)
+  }
+  if (b.lat !== undefined && b.lat !== null && b.lat !== '' && !(Math.abs(Number(b.lat)) <= 90)) errors.push('Latitud inválida')
+  if (b.lng !== undefined && b.lng !== null && b.lng !== '' && !(Math.abs(Number(b.lng)) <= 180)) errors.push('Longitud inválida')
+  if (b.creditLimit !== undefined && b.creditLimit !== null && b.creditLimit !== '' && !(Number(b.creditLimit) >= 0)) errors.push('Cupo inválido')
+  if (b.status && !['activo', 'bloqueado', 'inactivo'].includes(b.status)) errors.push('Estado inválido')
+  return errors
+}
+
+const rowFrom = (b) => ({
+  doc_type: b.docType || 'CC',
+  identification: clean(b.identification),
+  name: clean(b.name),
+  last_name: clean(b.lastName) || '',
+  phone: clean(b.phone),
+  phone2: clean(b.phone2),
+  email: clean(b.email),
+  address: clean(b.address),
+  neighborhood: clean(b.neighborhood),
+  city: clean(b.city),
+  occupation: clean(b.occupation),
+  business_address: clean(b.businessAddress),
+  birth_date: clean(b.birthDate),
+  photo_url: clean(b.photoUrl),
+  photo_thumb: clean(b.photoThumb),
+  id_photo_url: clean(b.idPhotoUrl),
+  lat: num(b.lat),
+  lng: num(b.lng),
+  credit_limit: num(b.creditLimit),
+  notes: clean(b.notes)
+})
+
+// Valida que el prestamista asignado exista y tenga ese rol.
+const checkLender = async (id) => {
+  if (!id) return null
+  const { data } = await supabase.from('users').select('id').eq('id', Number(id)).eq('role', 'prestamista').eq('active', true).maybeSingle()
+  return data ? data.id : undefined
+}
+
+const dupMessage = (e) => (e?.code === '23505' ? 'Ya existe un cliente con esa identificación' : null)
+
+// Lista con saldo de créditos activos.
+router.get('/clientes', auth(STAFF), h(async (req, res) => {
+  let q = scoped(req, supabase.from('customers').select(LIST_COLUMNS)).order('name').limit(1000)
+  if (req.query.estado) q = q.eq('status', req.query.estado)
+  if (req.user.role === 'administrador' && Number(req.query.prestamista)) q = q.eq('lender_id', Number(req.query.prestamista))
+  const term = clean(req.query.q)
+  if (term) {
+    const t = term.replace(/[%,()]/g, ' ')
+    q = q.or(`name.ilike.%${t}%,last_name.ilike.%${t}%,identification.ilike.%${t}%,phone.ilike.%${t}%`)
+  }
+  const { data, error } = await q
+  if (error) throw error
+  const ids = data.map((c) => c.id)
+  const balances = {}
+  if (ids.length) {
+    const { data: bal, error: e2 } = await supabase.from('credit_balances').select('customer_id, balance, overdue_amount').eq('status', 'activo').in('customer_id', ids)
+    if (e2) throw e2
+    for (const b of bal) {
+      const x = balances[b.customer_id] || (balances[b.customer_id] = { activeCredits: 0, balance: 0, overdue: 0 })
+      x.activeCredits++; x.balance += Number(b.balance); x.overdue += Number(b.overdue_amount)
+    }
+  }
+  res.send(data.map((c) => toDTO(c, balances[c.id] || { activeCredits: 0, balance: 0, overdue: 0 })))
+}))
+
+// Prestamistas activos (para asignar clientes y créditos).
+router.get('/prestamistas', auth(STAFF), h(async (req, res) => {
+  const { data, error } = await supabase.from('users').select('id, name, last_name').eq('role', 'prestamista').eq('active', true).order('name')
+  if (error) throw error
+  res.send(data.map((u) => ({ id: u.id, fullName: fullName(u) })))
+}))
+
+router.get('/clientes/:id', auth(STAFF), h(async (req, res) => {
+  const c = await loadOne(req, Number(req.params.id))
+  if (!c) return fail(res, 'Cliente no encontrado', 404)
+  const [{ data: credits }, { data: inst }, { data: bal }, { data: user }] = await Promise.all([
+    supabase.from('credits').select('id, number, kind, principal, total_amount, frequency, installments_count, disbursement_date, status, created_at').eq('customer_id', c.id).order('created_at', { ascending: false }),
+    supabase.from('installments').select('due_date, status, paid_at, credit:credits!inner(customer_id)').eq('credit.customer_id', c.id),
+    supabase.from('credit_balances').select('credit_id, balance, overdue_amount, overdue_count, next_due_date, paid_count').eq('customer_id', c.id),
+    c.user_id ? supabase.from('users').select('id, username, active').eq('id', c.user_id).maybeSingle() : Promise.resolve({ data: null })
+  ])
+  const byId = Object.fromEntries((bal || []).map((b) => [b.credit_id, b]))
+  res.send(toDTO(c, {
+    score: score({ installments: inst || [], credits: credits || [], today: todayBogota() }),
+    user: user ? { id: user.id, username: user.username, active: user.active } : null,
+    credits: (credits || []).map((k) => ({
+      id: k.id, number: k.number, kind: k.kind, principal: Number(k.principal), totalAmount: Number(k.total_amount), frequency: k.frequency,
+      installmentsCount: k.installments_count, disbursementDate: k.disbursement_date, status: k.status,
+      balance: Number(byId[k.id]?.balance ?? 0), overdue: Number(byId[k.id]?.overdue_amount ?? 0), overdueCount: byId[k.id]?.overdue_count ?? 0,
+      paidCount: byId[k.id]?.paid_count ?? 0, nextDueDate: byId[k.id]?.next_due_date ?? null
+    }))
+  }))
+}))
+
+router.post('/clientes', auth(STAFF), h(async (req, res) => {
+  const b = req.body || {}
+  const errors = validate(b)
+  if (errors.length) return fail(res, errors.join('. '), 400)
+  let lenderId = req.user.role === 'prestamista' ? req.user.id : await checkLender(b.lenderId)
+  if (lenderId === undefined) return fail(res, 'El prestamista asignado no existe o está inactivo', 400)
+  const row = { ...rowFrom(b), lender_id: lenderId, created_by: req.user.id }
+  if (req.user.role === 'administrador' && b.status) row.status = b.status
+  const { data, error } = await supabase.from('customers').insert(row).select('id').single()
+  if (error) return dupMessage(error) ? fail(res, dupMessage(error), 409) : fail(res, error)
+  await audit(req, 'crear', 'cliente', data.id, { identification: row.identification })
+  res.status(201).send(toDTO(await loadOne(req, data.id)))
+}))
+
+router.put('/clientes/:id', auth(STAFF), h(async (req, res) => {
+  const id = Number(req.params.id)
+  const current = await loadOne(req, id)
+  if (!current) return fail(res, 'Cliente no encontrado', 404)
+  const b = req.body || {}
+  const errors = validate(b)
+  if (errors.length) return fail(res, errors.join('. '), 400)
+  const patch = rowFrom(b)
+  if (req.user.role === 'administrador') {
+    const lenderId = await checkLender(b.lenderId)
+    if (lenderId === undefined) return fail(res, 'El prestamista asignado no existe o está inactivo', 400)
+    patch.lender_id = lenderId
+    if (b.status) patch.status = b.status
+  } else {
+    delete patch.credit_limit // el cupo lo define el administrador
+  }
+  const { error } = await supabase.from('customers').update(patch).eq('id', id)
+  if (error) return dupMessage(error) ? fail(res, dupMessage(error), 409) : fail(res, error)
+  await audit(req, 'editar', 'cliente', id)
+  res.send(toDTO(await loadOne(req, id)))
+}))
+
+// Crea (o actualiza) el usuario con rol cliente para que consulte sus créditos.
+router.post('/clientes/:id/usuario', auth(ADMIN), h(async (req, res) => {
+  const id = Number(req.params.id)
+  const c = await loadOne(req, id)
+  if (!c) return fail(res, 'Cliente no encontrado', 404)
+  const username = String(clean(req.body?.username) || '').toLowerCase()
+  const password = req.body?.password || ''
+  if (!/^[a-z0-9._-]{3,30}$/.test(username)) return fail(res, 'Usuario inválido (3 a 30: letras, números, punto, guion)', 400)
+  if (!c.user_id && password.length < 8) return fail(res, 'La contraseña debe tener al menos 8 caracteres', 400)
+  if (c.user_id && password && password.length < 8) return fail(res, 'La contraseña debe tener al menos 8 caracteres', 400)
+  let user
+  if (c.user_id) {
+    const patch = { username, active: req.body?.active !== false }
+    if (password) patch.password_hash = await bcrypt.hash(password, 10)
+    const { data, error } = await supabase.from('users').update(patch).eq('id', c.user_id).select(USER_COLUMNS).single()
+    if (error) return error.code === '23505' ? fail(res, 'Ese nombre de usuario ya existe', 409) : fail(res, error)
+    user = data
+  } else {
+    const { data, error } = await supabase.from('users').insert({
+      identification: c.identification, name: c.name, last_name: c.last_name, username, email: c.email, phone: c.phone,
+      role: 'cliente', password_hash: await bcrypt.hash(password, 10), avatar_url: c.photo_thumb
+    }).select(USER_COLUMNS).single()
+    if (error) return error.code === '23505' ? fail(res, String(error.message).includes('username') ? 'Ese nombre de usuario ya existe' : 'Ya existe un usuario con esa identificación', 409) : fail(res, error)
+    user = data
+    await supabase.from('customers').update({ user_id: user.id }).eq('id', id)
+  }
+  await audit(req, c.user_id ? 'editar' : 'crear', 'usuario_cliente', user.id, { customer: id })
+  res.send(toUserDTO(user))
+}))
+
+module.exports = router

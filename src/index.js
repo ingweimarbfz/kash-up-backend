@@ -14,6 +14,7 @@ app.get('/health', (req, res) => res.send({ ok: true }))
 
 app.use(require('./routes/auth'))
 app.use(require('./routes/users'))
+app.use(require('./routes/customers'))
 app.use(require('./routes/settings'))
 app.use(require('./routes/dashboard'))
 app.use(require('./routes/audit'))
