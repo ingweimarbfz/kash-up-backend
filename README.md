@@ -149,3 +149,11 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 
 ## Ramas
 `feature/KU-00X/Descripcion` o `fix/KU-00X/Descripcion` → `develop` (integración) → `main` (producción, solo con aprobación).
+
+## KU-016 · Conductores
+
+- Tabla `drivers` (nombre, cédula, celular, dirección, licencia: número, categoría A1…C3, vencimiento y foto).
+- El vehículo guarda `driver_id`; el celular y la licencia se toman del registro del conductor.
+- Endpoints: `GET /conductores` (`?activos=1`), `POST /conductores` y `PUT /conductores/:id` (administrador). Desactivar un conductor lo quita de sus vehículos.
+- Alerta en el vehículo cuando la licencia del conductor vence en 30 días o ya venció.
+- Los mantenimientos siguen como en KU-015.

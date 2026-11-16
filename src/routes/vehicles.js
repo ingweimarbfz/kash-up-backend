@@ -21,16 +21,19 @@ const daysTo = (d, today) => (d ? Math.round((new Date(`${d}T12:00:00Z`) - new D
 
 const KINDS = { moto: 'Moto', carro: 'Carro', camioneta: 'Camioneta', otro: 'Otro' }
 const MAINT = { preventivo: 'Preventivo', correctivo: 'Correctivo', cambio_aceite: 'Cambio de aceite', llantas: 'Llantas', frenos: 'Frenos', otro: 'Otro' }
-const DOCS = [['soat_expires', 'SOAT'], ['tecno_expires', 'Técnico-mecánica'], ['insurance_expires', 'Póliza'], ['driver_license_expires', 'Licencia del conductor']]
+const LICENSE_CATS = ['A1', 'A2', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3']
+const DOCS = [['soat_expires', 'SOAT'], ['tecno_expires', 'Técnico-mecánica'], ['insurance_expires', 'Póliza']]
 
-const SELECT = '*, collector:users!vehicles_collector_id_fkey(id, name, last_name, phone)'
+const DRIVER_COLS = 'id, name, last_name, identification, phone, license_number, license_category, license_expires, active'
+const SELECT = `*, collector:users!vehicles_collector_id_fkey(id, name, last_name, phone), driver:drivers(${DRIVER_COLS})`
+const driverDTO = (d) => (d ? { id: d.id, fullName: fullName(d), identification: d.identification, phone: d.phone, licenseNumber: d.license_number, licenseCategory: d.license_category, licenseExpires: d.license_expires, active: d.active } : null)
 
 // Alertas: documentos vencidos o por vencer (30 días) y cambio de aceite.
 const alertsOf = (v, lastOil, today) => {
   const out = []
   for (const [k, label] of DOCS) {
     const d = daysTo(v[k], today)
-    if (d === null) { if (k !== 'driver_license_expires' && k !== 'insurance_expires') out.push({ level: 'warn', text: `Sin fecha de ${label}` }); continue }
+    if (d === null) { if (k !== 'insurance_expires') out.push({ level: 'warn', text: `Sin fecha de ${label}` }); continue }
     if (d < 0) out.push({ level: 'bad', text: `${label} vencido hace ${-d} día(s)` })
     else if (d <= 30) out.push({ level: 'warn', text: `${label} vence en ${d} día(s)` })
   }
@@ -38,6 +41,11 @@ const alertsOf = (v, lastOil, today) => {
     const since = v.odometer - (lastOil ?? 0)
     if (lastOil !== null && lastOil !== undefined && since >= v.oil_change_km) out.push({ level: 'bad', text: `Cambio de aceite atrasado (${since.toLocaleString('es-CO')} km desde el último)` })
     else if (lastOil !== null && lastOil !== undefined && since >= v.oil_change_km * 0.9) out.push({ level: 'warn', text: `Cambio de aceite en ${(v.oil_change_km - since).toLocaleString('es-CO')} km` })
+  }
+  if (v.driver?.license_expires) {
+    const d = daysTo(v.driver.license_expires, today)
+    if (d < 0) out.push({ level: 'bad', text: `Licencia de ${fullName(v.driver)} vencida hace ${-d} día(s)` })
+    else if (d <= 30) out.push({ level: 'warn', text: `Licencia de ${fullName(v.driver)} vence en ${d} día(s)` })
   }
   if (v.status === 'taller') out.push({ level: 'warn', text: 'En el taller' })
   return out
@@ -47,7 +55,7 @@ const dto = (v, extra = {}) => ({
   id: v.id, code: v.code, plate: v.plate, kind: v.kind, kindLabel: KINDS[v.kind], brand: v.brand, line: v.line, modelYear: v.model_year, color: v.color,
   engineCc: v.engine_cc, vin: v.vin, ownerName: v.owner_name, photoUrl: v.photo_url, status: v.status, odometer: v.odometer,
   collector: v.collector ? { id: v.collector.id, fullName: fullName(v.collector), phone: v.collector.phone } : null,
-  driverName: v.driver_name, driverPhone: v.driver_phone, driverLicense: v.driver_license, driverLicenseExpires: v.driver_license_expires,
+  driver: driverDTO(v.driver), driverId: v.driver_id,
   soatExpires: v.soat_expires, soatNumber: v.soat_number, tecnoExpires: v.tecno_expires,
   insuranceCompany: v.insurance_company, insurancePolicy: v.insurance_policy, insuranceExpires: v.insurance_expires,
   oilChangeKm: v.oil_change_km, notes: v.notes, createdAt: v.created_at, ...extra
@@ -135,8 +143,7 @@ const rowFrom = (b) => {
   const r = {
     code: clean(b.code), plate: clean(b.plate)?.toUpperCase().replace(/\s+/g, ''), kind: b.kind || 'moto', brand: clean(b.brand), line: clean(b.line),
     model_year: int(b.modelYear), color: clean(b.color), engine_cc: int(b.engineCc), vin: clean(b.vin), owner_name: clean(b.ownerName),
-    status: b.status || 'activo', collector_id: Number(b.collectorId) || null,
-    driver_name: clean(b.driverName), driver_phone: clean(b.driverPhone), driver_license: clean(b.driverLicense), driver_license_expires: clean(b.driverLicenseExpires),
+    status: b.status || 'activo', collector_id: Number(b.collectorId) || null, driver_id: Number(b.driverId) || null,
     soat_expires: clean(b.soatExpires), soat_number: clean(b.soatNumber), tecno_expires: clean(b.tecnoExpires),
     insurance_company: clean(b.insuranceCompany), insurance_policy: clean(b.insurancePolicy), insurance_expires: clean(b.insuranceExpires),
     oil_change_km: int(b.oilChangeKm), notes: clean(b.notes)
@@ -151,11 +158,15 @@ const validate = (r, b) => {
   if (!KINDS[r.kind]) e.push('Tipo de vehículo no válido')
   if (!['activo', 'taller', 'inactivo'].includes(r.status)) e.push('Estado no válido')
   if (r.model_year && (r.model_year < 1950 || r.model_year > 2100)) e.push('Año del modelo no válido')
-  if (r.driver_phone && !PHONE_RE.test(r.driver_phone)) e.push('Celular del conductor no válido')
-  for (const k of ['soat_expires', 'tecno_expires', 'insurance_expires', 'driver_license_expires']) if (r[k] && !ISO.test(r[k])) e.push('Fecha no válida')
+  for (const k of ['soat_expires', 'tecno_expires', 'insurance_expires']) if (r[k] && !ISO.test(r[k])) e.push('Fecha no válida')
   const img = b.photoUrl ? imageError(b.photoUrl) : null
   if (img) e.push(img)
   return e
+}
+const checkDriver = async (id) => {
+  if (!id) return true
+  const { data } = await supabase.from('drivers').select('id').eq('id', id).eq('active', true).maybeSingle()
+  return Boolean(data)
 }
 const checkCollector = async (id) => {
   if (!id) return true
@@ -170,6 +181,7 @@ router.post('/vehiculos', auth(ADMIN), h(async (req, res) => {
   const errors = validate(r, b)
   if (errors.length) return fail(res, errors.join('. '), 400)
   if (!(await checkCollector(r.collector_id))) return fail(res, 'El prestamista elegido no existe', 400)
+  if (!(await checkDriver(r.driver_id))) return fail(res, 'El conductor elegido no existe o está inactivo', 400)
   r.odometer = Math.max(int(b.odometer) || 0, 0)
   const { data, error } = await supabase.from('vehicles').insert(r).select('id').single()
   if (error) return dupMsg(error) ? fail(res, dupMsg(error), 400) : fail(res, error)
@@ -184,6 +196,7 @@ router.put('/vehiculos/:id', auth(ADMIN), h(async (req, res) => {
   const errors = validate(r, b)
   if (errors.length) return fail(res, errors.join('. '), 400)
   if (!(await checkCollector(r.collector_id))) return fail(res, 'El prestamista elegido no existe', 400)
+  if (!(await checkDriver(r.driver_id))) return fail(res, 'El conductor elegido no existe o está inactivo', 400)
   // El administrador puede corregir el kilometraje (por ejemplo, si se registró mal).
   if (b.odometer !== undefined && b.odometer !== '') r.odometer = Math.max(int(b.odometer) || 0, 0)
   const { data, error } = await supabase.from('vehicles').update(r).eq('id', Number(req.params.id)).select('id').maybeSingle()
@@ -260,6 +273,57 @@ router.post('/vehiculos/:id/mantenimientos', auth(STAFF), h(async (req, res) => 
   if (b.inShop !== undefined && req.user.role === 'administrador') await supabase.from('vehicles').update({ status: b.inShop ? 'taller' : 'activo' }).eq('id', v.id)
   await audit(req, 'crear', 'mantenimiento', data.id, { vehicle: v.plate, kind: b.kind, cost })
   res.status(201).send({ id: data.id })
+}))
+
+// ---------- Conductores ----------
+const driverRow = (b) => {
+  const r = {
+    name: clean(b.name), last_name: clean(b.lastName), identification: clean(b.identification), phone: clean(b.phone), address: clean(b.address),
+    license_number: clean(b.licenseNumber), license_category: clean(b.licenseCategory), license_expires: clean(b.licenseExpires), notes: clean(b.notes), active: b.active !== false
+  }
+  if (b.licensePhotoUrl !== undefined) r.license_photo_url = clean(b.licensePhotoUrl)
+  if (b.photoUrl !== undefined) r.photo_url = clean(b.photoUrl)
+  const e = []
+  if (!r.name) e.push('El nombre es obligatorio')
+  if (!r.identification || !/^[0-9A-Za-z.-]{5,15}$/.test(r.identification)) e.push('Número de documento no válido')
+  if (!r.phone || !PHONE_RE.test(r.phone)) e.push('Celular no válido')
+  if (!r.license_number) e.push('El número de la licencia es obligatorio')
+  if (!LICENSE_CATS.includes(r.license_category)) e.push('Elige la categoría de la licencia')
+  if (!ISO.test(r.license_expires || '')) e.push('La fecha de vencimiento de la licencia es obligatoria')
+  for (const k of ['licensePhotoUrl', 'photoUrl']) if (b[k] && imageError(b[k])) e.push(imageError(b[k]))
+  return { r, e }
+}
+const fullDriver = (d, vehicles = [], today = todayBogota()) => ({
+  ...driverDTO(d), lastName: d.last_name, name: d.name, address: d.address, notes: d.notes, licensePhotoUrl: d.license_photo_url, photoUrl: d.photo_url,
+  licenseDays: daysTo(d.license_expires, today), vehicles: vehicles.filter((v) => v.driver_id === d.id).map((v) => ({ id: v.id, code: v.code, plate: v.plate }))
+})
+
+router.get('/conductores', auth(STAFF), h(async (req, res) => {
+  let q = supabase.from('drivers').select('*').order('name')
+  if (req.query.activos) q = q.eq('active', true)
+  const [{ data, error }, { data: veh }] = await Promise.all([q, supabase.from('vehicles').select('id, code, plate, driver_id').not('driver_id', 'is', null)])
+  if (error) throw error
+  res.send(data.map((d) => fullDriver(d, veh || [])))
+}))
+
+router.post('/conductores', auth(ADMIN), h(async (req, res) => {
+  const { r, e } = driverRow(req.body || {})
+  if (e.length) return fail(res, e.join('. '), 400)
+  const { data, error } = await supabase.from('drivers').insert(r).select('*').single()
+  if (error) return error.code === '23505' ? fail(res, 'Ya existe un conductor con ese documento', 400) : fail(res, error)
+  await audit(req, 'crear', 'conductor', data.id, { identification: r.identification })
+  res.status(201).send(fullDriver(data))
+}))
+
+router.put('/conductores/:id', auth(ADMIN), h(async (req, res) => {
+  const { r, e } = driverRow(req.body || {})
+  if (e.length) return fail(res, e.join('. '), 400)
+  const { data, error } = await supabase.from('drivers').update(r).eq('id', Number(req.params.id)).select('*').maybeSingle()
+  if (error) return error.code === '23505' ? fail(res, 'Ya existe un conductor con ese documento', 400) : fail(res, error)
+  if (!data) return fail(res, 'Conductor no encontrado', 404)
+  if (!data.active) await supabase.from('vehicles').update({ driver_id: null }).eq('driver_id', data.id)
+  await audit(req, 'editar', 'conductor', data.id, { active: data.active })
+  res.send(fullDriver(data))
 }))
 
 router.post('/vehiculos/:id/kilometraje', auth(STAFF), h(async (req, res) => {
