@@ -206,6 +206,11 @@ router.get('/buscar', auth(STAFF), h(async (req, res) => {
     eq = expenseNo ? eq.eq('number', `GA-${String(expenseNo).padStart(4, '0')}`) : eq.order('id', { ascending: false })
     tasks.push(eq.limit(4).then(({ data }) => ({ key: 'gastos', label: 'Gastos', items: (data || []).map((e) => ({ id: e.id, title: e.number, subtitle: `${e.category} · $ ${n(e.amount).toLocaleString('es-CO')} · ${e.spent_on}`, to: '/gastos' })) })))
   }
+  if (t.length >= 3) {
+    tasks.push(mine(supabase.from('vehicles').select('id, code, plate, kind, brand, line'), 'collector_id').or(`plate.ilike.%${t.replace(/\s+/g, '')}%,code.ilike.%${t}%,brand.ilike.%${t}%`).limit(3).then(({ data }) => ({
+      key: 'vehiculos', label: 'Vehículos', items: (data || []).map((v) => ({ id: v.id, title: `${v.plate} · Móvil ${v.code}`, subtitle: [v.kind, v.brand, v.line].filter(Boolean).join(' · '), to: `/vehiculos/${v.id}` }))
+    })))
+  }
   if (admin && !digits) {
     tasks.push(supabase.from('products').select('id, sku, name, price').or(`name.ilike.%${t}%,sku.ilike.%${t}%,brand.ilike.%${t}%`).limit(4).then(({ data }) => ({
       key: 'productos', label: 'Productos', items: (data || []).map((p) => ({ id: p.id, title: p.name, subtitle: `${p.sku} · $ ${n(p.price).toLocaleString('es-CO')}`, to: '/inventario' }))
@@ -243,7 +248,10 @@ router.get('/dashboard/extra', auth(STAFF), h(async (req, res) => {
       supabase.from('credit_requests').select('id', { count: 'exact', head: true }).eq('status', 'pendiente'),
       supabase.from('cash_transfers').select('id', { count: 'exact', head: true }).eq('status', 'pendiente')
     ])
-    out.pending = { creditRequests: reqs || 0, cashTransfers: trs || 0 }
+    const { alertsOf } = require('./vehicles')
+    const { data: veh } = await supabase.from('vehicles').select('*').neq('status', 'inactivo')
+    const vehicleAlerts = (veh || []).filter((v) => alertsOf(v, undefined, today).some((a) => a.level === 'bad')).length
+    out.pending = { creditRequests: reqs || 0, cashTransfers: trs || 0, vehicleAlerts }
     const late = rows.filter((r) => r.daysLate > 0).sort((a, b) => n(b.overdue_amount) - n(a.overdue_amount)).slice(0, 5)
     if (late.length) {
       const { data: cr } = await supabase.from('credits').select('id, number, customer:customers(name, last_name, photo_thumb)').in('id', late.map((r) => r.credit_id))
