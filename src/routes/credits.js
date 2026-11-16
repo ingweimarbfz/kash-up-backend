@@ -140,49 +140,142 @@ router.post('/creditos/simular', auth(STAFF), withBad(async (req, res) => {
     funds = await availableFor(resolveLender(req, b, p.customer))
     funds.enough = funds.available >= cashOut
   }
-  res.send({ funds, renewal, productsTotal: p.productsTotal, discountAmount: p.discountAmount, discountName: p.discount?.name ?? null, downPayment: p.downPayment, rate: p.rateInfo, ...p.schedule })
+  // El prestamista necesita aprobación del administrador si el cliente ya tiene un crédito activo.
+  let needsApproval = null
+  if (!renewal && req.user.role === 'prestamista') {
+    const active = await activeCredits(p.customer.id)
+    if (active.length) needsApproval = { activeCredits: active.map((c) => c.number) }
+  }
+  res.send({ funds, renewal, needsApproval, productsTotal: p.productsTotal, discountAmount: p.discountAmount, discountName: p.discount?.name ?? null, downPayment: p.downPayment, rate: p.rateInfo, ...p.schedule })
 }))
 
-router.post('/creditos', auth(STAFF), withBad(async (req, res) => {
-  const b = req.body || {}
+const validRefs = (b) => {
   const refs = (Array.isArray(b.references) ? b.references : []).map((r) => ({ name: clean(r.name), phone: clean(r.phone), relationship: clean(r.relationship), address: clean(r.address) })).filter((r) => r.name || r.phone)
-  if (!refs.length) return fail(res, 'Agrega al menos una referencia personal', 400)
+  if (!refs.length) throw new Bad('Agrega al menos una referencia personal')
   for (const r of refs) {
-    if (!r.name || !r.phone) return fail(res, 'Cada referencia necesita nombre y celular', 400)
-    if (!PHONE_RE.test(r.phone)) return fail(res, `Celular de la referencia ${r.name} no válido`, 400)
+    if (!r.name || !r.phone) throw new Bad('Cada referencia necesita nombre y celular')
+    if (!PHONE_RE.test(r.phone)) throw new Bad(`Celular de la referencia ${r.name} no válido`)
   }
+  return refs
+}
+
+// ¿El cliente ya tiene un crédito activo? (para pedir aprobación al administrador)
+const activeCredits = async (customerId) => {
+  const { data } = await supabase.from('credits').select('id, number').eq('customer_id', customerId).eq('status', 'activo')
+  return data || []
+}
+
+// Crea el crédito. Con `approval` se crea a partir de una solicitud aprobada por el administrador.
+const createCredit = async (req, b, approval = null) => {
+  const refs = validRefs(b)
   const p = await prepare(req, b)
   let lenderId = resolveLender(req, b, p.customer)
   if (lenderId && req.user.role === 'administrador') {
     const { data: l } = await supabase.from('users').select('id').eq('id', lenderId).eq('role', 'prestamista').eq('active', true).maybeSingle()
-    if (!l) return fail(res, 'El prestamista seleccionado no existe o está inactivo', 400)
+    if (!l) throw new Bad('El prestamista seleccionado no existe o está inactivo')
   }
   const s = p.schedule
   let renewal = null
   if (Number(b.renewFromId)) {
-    if (b.kind !== 'efectivo') return fail(res, 'La renovación se hace como crédito en efectivo', 400)
+    if (b.kind !== 'efectivo') throw new Bad('La renovación se hace como crédito en efectivo')
     renewal = await renewalInfo(req, b.renewFromId)
-    if (renewal.customerId !== p.customer.id) return fail(res, 'La renovación debe ser para el mismo cliente', 400)
-    if (!renewal.canRenew) return fail(res, `No se puede renovar. ${renewal.reason}`, 400)
-    if (s.disbursedAmount - renewal.payoff <= 0) return fail(res, `El nuevo crédito debe entregar más que el saldo actual (${renewal.payoff.toLocaleString('es-CO')})`, 400)
+    if (renewal.customerId !== p.customer.id) throw new Bad('La renovación debe ser para el mismo cliente')
+    if (!renewal.canRenew) throw new Bad(`No se puede renovar. ${renewal.reason}`)
+    if (s.disbursedAmount - renewal.payoff <= 0) throw new Bad(`El nuevo crédito debe entregar más que el saldo actual (${renewal.payoff.toLocaleString('es-CO')})`)
   }
-  const { data: id, error } = await supabase.rpc(renewal ? 'renew_credit' : 'create_credit', {
-    p: {
-      ...(renewal ? { renewed_from_id: renewal.creditId, payoff_amount: renewal.payoff } : {}),
-      org_id: currentOrg(), customer_id: p.customer.id, lender_id: lenderId, kind: b.kind,
-      products_total: p.productsTotal, discount_id: p.discount?.id ?? null, discount_name: p.discount?.name ?? null, discount_amount: p.discountAmount, down_payment: p.downPayment,
-      principal: s.principal, interest_rate_id: p.rateInfo.id, interest_name: p.rateInfo.name, interest_method: s.method, rate: s.rate, rate_basis: s.rateBasis,
-      frequency: s.frequency, interval_days: s.intervalDays, installments_count: s.count, skip_sundays: Boolean(b.skipSundays),
-      disbursement_date: p.disbursementDate, first_due_date: s.firstDueDate, last_due_date: s.lastDueDate,
-      total_interest: s.totalInterest, total_amount: s.totalAmount, installment_amount: s.installmentAmount, disbursed_amount: renewal ? s.disbursedAmount - renewal.payoff : s.disbursedAmount,
-      notes: clean(b.notes), created_by: req.user.id,
-      references: refs, items: p.items, warehouse_id: p.warehouse?.id ?? null,
-      installments: s.installments.map((i) => ({ number: i.number, due_date: i.dueDate, capital: i.capital, interest: i.interest, amount: i.amount }))
+  const payload = {
+    ...(renewal ? { renewed_from_id: renewal.creditId, payoff_amount: renewal.payoff } : {}),
+    org_id: currentOrg(), customer_id: p.customer.id, lender_id: lenderId, kind: b.kind,
+    products_total: p.productsTotal, discount_id: p.discount?.id ?? null, discount_name: p.discount?.name ?? null, discount_amount: p.discountAmount, down_payment: p.downPayment,
+    principal: s.principal, interest_rate_id: p.rateInfo.id, interest_name: p.rateInfo.name, interest_method: s.method, rate: s.rate, rate_basis: s.rateBasis,
+    frequency: s.frequency, interval_days: s.intervalDays, installments_count: s.count, skip_sundays: Boolean(b.skipSundays),
+    disbursement_date: p.disbursementDate, first_due_date: s.firstDueDate, last_due_date: s.lastDueDate,
+    total_interest: s.totalInterest, total_amount: s.totalAmount, installment_amount: s.installmentAmount, disbursed_amount: renewal ? s.disbursedAmount - renewal.payoff : s.disbursedAmount,
+    notes: clean(b.notes), created_by: req.user.id,
+    references: refs, items: p.items, warehouse_id: p.warehouse?.id ?? null,
+    installments: s.installments.map((i) => ({ number: i.number, due_date: i.dueDate, capital: i.capital, interest: i.interest, amount: i.amount }))
+  }
+  // Prestamista + cliente con otro crédito activo (y no es renovación): queda como solicitud para el administrador.
+  if (!approval && !renewal && req.user.role === 'prestamista') {
+    const active = await activeCredits(p.customer.id)
+    if (active.length) {
+      const { data: pending } = await supabase.from('credit_requests').select('number').eq('customer_id', p.customer.id).eq('status', 'pendiente').maybeSingle()
+      if (pending) throw new Bad(`Este cliente ya tiene la solicitud ${pending.number} esperando aprobación del administrador`)
+      const { data: n } = await supabase.rpc('next_counter', { p_org: currentOrg(), p_key: 'solicitud_credito' })
+      const { data: reqRow, error } = await supabase.from('credit_requests').insert({
+        number: `SC-${String(n).padStart(4, '0')}`, customer_id: p.customer.id, lender_id: lenderId, kind: b.kind, principal: s.principal,
+        installment_amount: s.installmentAmount, installments_count: s.count, frequency: s.frequency, payload: b, reason: clean(b.requestReason), requested_by: req.user.id
+      }).select('id, number').single()
+      if (error) throw error
+      await audit(req, 'solicitar', 'credito', reqRow.id, { customer: p.customer.id, principal: s.principal, active: active.map((c) => c.number) })
+      return { request: { id: reqRow.id, number: reqRow.number, activeCredits: active.map((c) => c.number) } }
     }
-  })
-  if (error) return error.code === 'P0001' ? fail(res, error.message, 400) : fail(res, error)
-  await audit(req, renewal ? 'renovar' : 'crear', 'credito', id, { kind: b.kind, principal: s.principal, customer: p.customer.id, renewedFrom: renewal?.number })
-  res.status(201).send(await detail(req, id))
+  }
+  const { data: id, error } = approval
+    ? await supabase.rpc('approve_credit_request', { p_org: currentOrg(), p_request: approval.id, p_user: approval.userId, p_note: approval.note, p: payload })
+    : await supabase.rpc(renewal ? 'renew_credit' : 'create_credit', { p: payload })
+  if (error) { if (error.code === 'P0001') throw new Bad(error.message); throw error }
+  await audit(approval ? approval.req : req, approval ? 'aprobar' : renewal ? 'renovar' : 'crear', 'credito', id, { kind: b.kind, principal: s.principal, customer: p.customer.id, renewedFrom: renewal?.number, request: approval?.number })
+  return { id }
+}
+
+router.post('/creditos', auth(STAFF), withBad(async (req, res) => {
+  const out = await createCredit(req, req.body || {})
+  if (out.request) return res.status(202).send({ request: out.request, message: `El cliente ya tiene un crédito activo (#${out.request.activeCredits.join(', #')}). Se envió la solicitud ${out.request.number} al administrador para que la apruebe.` })
+  res.status(201).send(await detail(req, out.id))
+}))
+
+// ---------- Solicitudes de crédito adicional ----------
+const REQ_SELECT = 'id, number, kind, principal, installment_amount, installments_count, frequency, reason, status, credit_id, review_note, reviewed_at, created_at, customer:customers(id, name, last_name, identification, photo_thumb), lender:users!credit_requests_lender_id_fkey(id, name, last_name), reviewer:users!credit_requests_reviewed_by_fkey(name, last_name)'
+const reqDTO = (r, extra = {}) => ({
+  id: r.id, number: r.number, kind: r.kind, principal: Number(r.principal), installmentAmount: Number(r.installment_amount), installmentsCount: r.installments_count,
+  frequency: r.frequency, frequencyLabel: FREQ_LABELS[r.frequency] || r.frequency, reason: r.reason, status: r.status, creditId: r.credit_id, reviewNote: r.review_note,
+  reviewedAt: r.reviewed_at, reviewer: fullName(r.reviewer), createdAt: r.created_at,
+  customer: r.customer ? { id: r.customer.id, fullName: fullName(r.customer), identification: r.customer.identification, photoThumb: r.customer.photo_thumb } : null,
+  lender: r.lender ? { id: r.lender.id, fullName: fullName(r.lender) } : null, ...extra
+})
+
+router.get('/solicitudes-credito', auth(STAFF), h(async (req, res) => {
+  let q = supabase.from('credit_requests').select(REQ_SELECT).order('id', { ascending: false }).limit(300)
+  if (req.user.role === 'prestamista') q = q.eq('lender_id', req.user.id)
+  if (req.query.estado) q = q.eq('status', req.query.estado)
+  const { data, error } = await q
+  if (error) throw error
+  // Lo que el cliente ya debe, para decidir.
+  const ids = [...new Set(data.filter((r) => r.status === 'pendiente').map((r) => r.customer?.id))]
+  const { data: bal } = ids.length ? await supabase.from('credit_balances').select('customer_id, balance, overdue_amount, overdue_count').in('customer_id', ids).eq('status', 'activo') : { data: [] }
+  res.send(data.map((r) => {
+    const b = (bal || []).filter((x) => x.customer_id === r.customer?.id)
+    return reqDTO(r, r.status === 'pendiente' ? { current: { credits: b.length, balance: b.reduce((s, x) => s + Number(x.balance), 0), overdue: b.reduce((s, x) => s + Number(x.overdue_amount), 0) } } : {})
+  }))
+}))
+
+router.post('/solicitudes-credito/:id/aprobar', auth(ADMIN), withBad(async (req, res) => {
+  const { data: r } = await supabase.from('credit_requests').select('id, number, status, payload, requested_by').eq('id', Number(req.params.id)).maybeSingle()
+  if (!r) throw new Bad('Solicitud no encontrada')
+  if (r.status !== 'pendiente') throw new Bad(`La solicitud ${r.number} ya fue ${r.status}`)
+  const { data: who } = await supabase.from('users').select('id, role, name, last_name, active').eq('id', r.requested_by).maybeSingle()
+  if (!who?.active) throw new Bad('El prestamista que hizo la solicitud está inactivo')
+  // Se recalcula a hoy, como si lo hiciera el prestamista (su caja, sus reglas).
+  const b = { ...r.payload, disbursementDate: todayBogota() }
+  if (!b.firstDueDate || b.firstDueDate <= b.disbursementDate) delete b.firstDueDate
+  const asLender = { ...req, user: { ...req.user, id: who.id, role: who.role } }
+  const out = await createCredit(asLender, b, { id: r.id, number: r.number, userId: req.user.id, note: clean(req.body?.note), req })
+  res.status(201).send({ creditId: out.id })
+}))
+
+router.post('/solicitudes-credito/:id/rechazar', auth(STAFF), withBad(async (req, res) => {
+  let q = supabase.from('credit_requests').select('id, number, status, lender_id').eq('id', Number(req.params.id))
+  if (req.user.role === 'prestamista') q = q.eq('requested_by', req.user.id)
+  const { data: r } = await q.maybeSingle()
+  if (!r) throw new Bad('Solicitud no encontrada')
+  if (r.status !== 'pendiente') throw new Bad(`La solicitud ${r.number} ya fue ${r.status}`)
+  const admin = req.user.role === 'administrador'
+  if (admin && !clean(req.body?.note)) throw new Bad('Escribe el motivo del rechazo')
+  const { error } = await supabase.from('credit_requests').update({ status: admin ? 'rechazada' : 'cancelada', review_note: clean(req.body?.note), reviewed_by: req.user.id, reviewed_at: new Date().toISOString() }).eq('id', r.id)
+  if (error) throw error
+  await audit(req, admin ? 'rechazar' : 'cancelar', 'solicitud_credito', r.id, { number: r.number })
+  res.send({ ok: true })
 }))
 
 const LIST_SELECT = 'id, number, kind, principal, total_amount, installment_amount, frequency, interval_days, installments_count, interest_method, rate, rate_basis, disbursement_date, last_due_date, status, created_at, customer:customers(id, name, last_name, identification, photo_thumb, phone), lender:users!credits_lender_id_fkey(id, name, last_name)'
