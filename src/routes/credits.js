@@ -30,20 +30,29 @@ const prepare = async (req, b) => {
   let productsTotal = 0
   let discountAmount = 0
   let discount = null
+  let warehouse = null
   const downPayment = money(b.downPayment)
   if (b.kind === 'producto') {
+    // Bodega que entrega: la elegida o, si no se elige, la bodega principal.
+    let wq = supabase.from('warehouses').select('id, name, active')
+    wq = Number(b.warehouseId) ? wq.eq('id', Number(b.warehouseId)) : wq.eq('is_general', true)
+    const { data: wh } = await wq.maybeSingle()
+    if (!wh || !wh.active) throw new Bad('Selecciona una bodega activa para entregar los productos')
+    warehouse = wh
     const wanted = (Array.isArray(b.items) ? b.items : []).filter((i) => Number(i.productId) && Number(i.quantity) > 0)
     if (!wanted.length) throw new Bad('Agrega al menos un producto')
     const ids = [...new Set(wanted.map((i) => Number(i.productId)))]
     if (ids.length !== wanted.length) throw new Bad('Un producto aparece dos veces; ajusta la cantidad en una sola línea')
-    const { data: products, error } = await supabase.from('products').select('id, name, price, stock, active').in('id', ids)
+    const { data: products, error } = await supabase.from('products').select('id, name, price, active').in('id', ids)
     if (error) throw error
+    const { data: stocks } = await supabase.from('warehouse_stock').select('product_id, stock').eq('warehouse_id', warehouse.id).in('product_id', ids)
+    for (const p of products) p.stock = stocks?.find((x) => x.product_id === p.id)?.stock ?? 0
     for (const w of wanted) {
       const p = products.find((x) => x.id === Number(w.productId))
       if (!p || !p.active) throw new Bad('Uno de los productos no existe o está inactivo')
       const qty = Number(w.quantity)
       if (!Number.isInteger(qty)) throw new Bad(`Cantidad inválida para ${p.name}`)
-      if (qty > p.stock) throw new Bad(`Stock insuficiente de "${p.name}" (disponible: ${p.stock})`)
+      if (qty > p.stock) throw new Bad(`Stock insuficiente de "${p.name}" en ${warehouse.name} (disponible: ${p.stock})`)
       // El precio lo toma del inventario; solo el administrador puede ajustarlo en el crédito.
       const unit = req.user.role === 'administrador' && w.unitPrice !== undefined && w.unitPrice !== '' ? money(w.unitPrice) : money(p.price)
       items.push({ product_id: p.id, product_name: p.name, quantity: qty, unit_price: unit, subtotal: unit * qty })
@@ -85,7 +94,7 @@ const prepare = async (req, b) => {
     principal, method: rateInfo.method, rate: rateInfo.rate, rateBasis: rateInfo.rateBasis, frequency: b.frequency, customDays: b.customDays,
     count: Number(b.count), disbursementDate, firstDueDate, skipSundays: Boolean(b.skipSundays), roundTo: b.roundTo === undefined ? 100 : Number(b.roundTo)
   })
-  return { customer, items, productsTotal, discount, discountAmount, downPayment, principal, rateInfo, disbursementDate, schedule }
+  return { customer, items, warehouse, productsTotal, discount, discountAmount, downPayment, principal, rateInfo, disbursementDate, schedule }
 }
 
 const withBad = (fn) => h(async (req, res) => {
@@ -121,7 +130,7 @@ router.post('/creditos', auth(STAFF), withBad(async (req, res) => {
       disbursement_date: p.disbursementDate, first_due_date: s.firstDueDate, last_due_date: s.lastDueDate,
       total_interest: s.totalInterest, total_amount: s.totalAmount, installment_amount: s.installmentAmount, disbursed_amount: s.disbursedAmount,
       notes: clean(b.notes), created_by: req.user.id,
-      references: refs, items: p.items,
+      references: refs, items: p.items, warehouse_id: p.warehouse?.id ?? null,
       installments: s.installments.map((i) => ({ number: i.number, due_date: i.dueDate, capital: i.capital, interest: i.interest, amount: i.amount }))
     }
   })
@@ -166,7 +175,7 @@ router.get('/creditos', auth(STAFF), h(async (req, res) => {
 }))
 
 const detail = async (req, id) => {
-  let q = supabase.from('credits').select(`*, customer:customers(id, name, last_name, identification, doc_type, photo_thumb, phone, address, neighborhood), lender:users!credits_lender_id_fkey(id, name, last_name), creator:users!credits_created_by_fkey(name, last_name)`).eq('id', id)
+  let q = supabase.from('credits').select(`*, customer:customers(id, name, last_name, identification, doc_type, photo_thumb, phone, address, neighborhood), lender:users!credits_lender_id_fkey(id, name, last_name), creator:users!credits_created_by_fkey(name, last_name), warehouse:warehouses(id, name)`).eq('id', id)
   if (req.user.role === 'prestamista') q = q.eq('lender_id', req.user.id)
   const { data: c } = await q.maybeSingle()
   if (!c) return null
@@ -183,7 +192,7 @@ const detail = async (req, id) => {
     productsTotal: Number(c.products_total), discountName: c.discount_name, discountAmount: Number(c.discount_amount), downPayment: Number(c.down_payment),
     interestName: c.interest_name, intervalDays: c.interval_days, skipSundays: c.skip_sundays, firstDueDate: c.first_due_date,
     totalInterest: Number(c.total_interest), disbursedAmount: Number(c.disbursed_amount), notes: c.notes, voidReason: c.void_reason,
-    createdBy: fullName(c.creator), capitalBalance: Number(bal[id]?.capital_balance ?? 0),
+    createdBy: fullName(c.creator), warehouse: c.warehouse ? { id: c.warehouse.id, name: c.warehouse.name } : null, capitalBalance: Number(bal[id]?.capital_balance ?? 0),
     items: (items || []).map((i) => ({ productId: i.product_id, name: i.product_name, quantity: i.quantity, unitPrice: Number(i.unit_price), subtotal: Number(i.subtotal) })),
     references: refs || [],
     installments: (inst || []).map((i) => ({

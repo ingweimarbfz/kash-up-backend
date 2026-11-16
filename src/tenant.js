@@ -15,7 +15,8 @@ const runAsOrg = (orgId, fn) => ctx.run({ orgId: Number(orgId) }, fn)
 const TENANT_TABLES = new Set([
   'users', 'app_settings', 'audit_log',
   'customers', 'interest_rates', 'product_categories', 'products', 'inventory_movements', 'discounts',
-  'credits', 'credit_items', 'credit_references', 'installments', 'credit_balances'
+  'credits', 'credit_items', 'credit_references', 'installments', 'credit_balances',
+  'sites', 'warehouses', 'warehouse_stock'
 ])
 
 const withOrg = (rows, org) => (Array.isArray(rows) ? rows.map((r) => ({ ...r, org_id: org })) : { ...rows, org_id: org })

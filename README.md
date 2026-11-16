@@ -32,7 +32,7 @@ scripts/seed.js        crea un negocio nuevo con su administrador
 | `prestamista` | Su ruta, sus clientes y sus cobros |
 | `cliente` | Sus créditos, cuotas y pagos |
 
-## Endpoints (etapa 1)
+## Endpoints
 | Método | Ruta | Rol |
 |---|---|---|
 | POST | `/login` | público |
@@ -49,12 +49,23 @@ scripts/seed.js        crea un negocio nuevo con su administrador
 | GET/POST/PUT | `/tasas` | administrador (lectura: prestamista) |
 | POST | `/simulador` | administrador, prestamista |
 | GET/POST/PUT | `/inventario/categorias`, `/inventario/productos` | administrador (lectura: prestamista) |
-| GET/POST | `/inventario/movimientos`, GET `/inventario/resumen` | administrador |
+| GET/POST/PUT | `/sedes`, `/inventario/bodegas` | administrador (lectura: prestamista) |
+| GET | `/inventario/existencias?sede=&bodega=&categoria=&q=` | administrador, prestamista |
+| GET/POST | `/inventario/movimientos` (entrada, ajuste, baja por bodega), GET `/inventario/resumen` | administrador |
+| POST | `/inventario/traslados` (entre bodegas, número TR-0001) | administrador |
 | GET/POST/PUT | `/descuentos` | administrador (lectura: prestamista) |
 | POST | `/creditos/simular` | administrador, prestamista |
 | GET/POST | `/creditos`, GET `/creditos/:id` | administrador, prestamista (los suyos) |
 | POST | `/creditos/:id/anular` | administrador |
 | GET | `/mis-creditos` | cliente |
+
+## Inventario por bodegas
+
+Cada negocio tiene una **bodega principal** (en su sede principal) y puede crear sedes y varias bodegas por sede.
+Las existencias se llevan por bodega en `warehouse_stock`; `products.stock` es el total de todas. Cada movimiento
+(entrada, ajuste, baja, entrega en crédito, devolución o traslado) indica su bodega, y si una bodega quedara en
+negativo la operación completa se cancela con un mensaje claro. El crédito de producto entrega desde la bodega
+elegida y su anulación devuelve los productos a esa misma bodega. Los productos exigen categoría.
 
 ## Cálculo de créditos (`src/lib/schedule.js`)
 | Modalidad | Cómo se calcula |
