@@ -17,7 +17,7 @@ const TENANT_TABLES = new Set([
   'customers', 'interest_rates', 'product_categories', 'products', 'inventory_movements', 'discounts',
   'credits', 'credit_items', 'credit_references', 'installments', 'credit_balances',
   'sites', 'warehouses', 'warehouse_stock', 'fund_accounts', 'fund_movements', 'payments', 'payment_allocations',
-  'visits', 'expenses', 'route_closures', 'customer_transfers', 'cash_transfers', 'credit_requests'
+  'visits', 'expenses', 'route_closures', 'customer_transfers', 'cash_transfers', 'credit_requests', 'vehicles', 'vehicle_maintenances', 'vehicle_fuel_logs', 'vehicle_odometer_logs'
 ])
 
 const withOrg = (rows, org) => (Array.isArray(rows) ? rows.map((r) => ({ ...r, org_id: org })) : { ...rows, org_id: org })

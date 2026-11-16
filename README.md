@@ -120,6 +120,13 @@ aportado, configurable). Las reglas están en la base de datos (`apply_fund_move
 - **Traslado entre prestamistas:** el prestamista no le pasa dinero directo a otro. Desde "Mi caja" envía el valor al negocio (`POST /traslados-caja`) y queda pendiente. El administrador, en "Capital y cajas", lo entrega al prestamista pedido o a otro, o lo devuelve (`POST /traslados-caja/:id/entregar|rechazar`). Los movimientos son del tipo `traslado` y no consumen la reserva mínima del negocio.
 - **Varios créditos por cliente:** si el prestamista crea un crédito (que no sea renovación) para un cliente que ya tiene uno activo, se guarda como solicitud (`credit_requests`, número `SC-0001`) y responde 202. El administrador la aprueba en "Solicitudes" y el crédito se crea con fecha de hoy desde la caja del prestamista. La base de datos lo exige con el trigger `check_credit_lender`. El administrador puede crear créditos adicionales directamente.
 
+## Vehículos de cobro (Etapa 5)
+
+- `GET/POST/PUT /vehiculos`: hoja de vida (móvil, placa, tipo, marca, línea, modelo, chasis, propietario, foto), prestamista que cobra, conductor y su licencia, SOAT, técnico-mecánica, póliza y cada cuántos km se cambia el aceite.
+- `POST /vehiculos/:id/tanqueos|mantenimientos|kilometraje`: el prestamista registra sobre su vehículo; el administrador, sobre cualquiera. Si se pagó de una caja, se crea el gasto (combustible o mantenimiento) y queda ligado. Al eliminar el registro, el gasto se anula.
+- El kilometraje del vehículo es la lectura más alta (trigger `vehicle_odometer_bump`); un tanqueo no puede tener menos km que el actual.
+- Alertas: documentos vencidos o por vencer (30 días), cambio de aceite atrasado y vehículo en taller. Rendimiento en km/galón entre tanqueos llenos y costo por km de los últimos 30 días.
+
 ## Inventario por bodegas
 
 Cada negocio tiene una **bodega principal** (en su sede principal) y puede crear sedes y varias bodegas por sede.
