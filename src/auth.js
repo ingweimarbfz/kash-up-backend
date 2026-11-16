@@ -3,6 +3,7 @@ const supabase = require('./db')
 const tenant = require('./tenant')
 const { JWT_SECRET, SESSION_HOURS } = require('./config')
 const { fail } = require('./http')
+const { loadSite } = require('./site')
 
 // Roles de KashUp:
 // · administrador: dueño u operador del negocio; ve y configura todo.
@@ -14,7 +15,7 @@ const ADMIN = ['administrador']
 const STAFF = ['administrador', 'prestamista']
 const ALL = ROLES
 
-const USER_COLUMNS = 'id, org_id, identification, name, last_name, username, email, phone, role, avatar_url, active, last_login_at, created_at'
+const USER_COLUMNS = 'id, org_id, identification, name, last_name, username, email, phone, role, avatar_url, active, last_login_at, created_at, site_id, site:sites(id, name, city)'
 
 const toUserDTO = (u) => ({
   id: u.id,
@@ -31,7 +32,9 @@ const toUserDTO = (u) => ({
   avatarUrl: u.avatar_url,
   active: u.active,
   lastLoginAt: u.last_login_at,
-  createdAt: u.created_at
+  createdAt: u.created_at,
+  siteId: u.site_id ?? null,
+  site: u.site ? { id: u.site.id, name: u.site.name, city: u.site.city } : null
 })
 
 const signToken = (user) => jwt.sign({ sub: String(user.id), org: user.org_id, role: user.role }, JWT_SECRET, { expiresIn: `${SESSION_HOURS}h` })
@@ -53,7 +56,10 @@ const auth = (roles = ALL) => async (req, res, next) => {
     if (user.org?.status === 'suspendida') return fail(res, 'El servicio de tu negocio está suspendido. Contacta a KashUp.', 401)
     if (!roles.includes(user.role)) return fail(res, 'No tienes permiso para esta acción', 403)
     req.user = user
-    return tenant.runAsOrg(user.org_id, () => next())
+    return tenant.runAsOrg(user.org_id, async () => {
+      try { await loadSite(req) } catch (e) { return fail(res, e) }
+      return next()
+    })
   } catch (e) {
     fail(res, e)
   }

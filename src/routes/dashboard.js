@@ -2,6 +2,7 @@ const express = require('express')
 const supabase = require('../db')
 const { h, todayBogota } = require('../http')
 const { auth } = require('../auth')
+const { byLenders } = require('../site')
 
 const router = express.Router()
 
@@ -22,7 +23,7 @@ const series = async (lenderId) => {
   const from = `${months[0].key}-01`
   let cq = supabase.from('credits').select('principal, disbursement_date').neq('status', 'anulado').gte('disbursement_date', from)
   let iq = supabase.from('payments').select('amount, paid_on').eq('status', 'aplicado').neq('kind', 'renovacion').gte('paid_on', from)
-  if (lenderId) { cq = cq.eq('lender_id', lenderId); iq = iq.eq('lender_id', lenderId) }
+  cq = byLenders(cq, lenderId); iq = byLenders(iq, lenderId)
   const [{ data: credits }, { data: paid }] = await Promise.all([cq, iq])
   return months.map(({ key, mes }) => ({
     mes,
@@ -35,7 +36,7 @@ const sumBy = (rows, k) => rows.reduce((s, r) => s + Number(r[k] || 0), 0)
 // Recaudo del día (sin los cierres por renovación, que no son efectivo).
 const collectedToday = async (lenderId) => {
   let q = supabase.from('payments').select('amount').eq('status', 'aplicado').neq('kind', 'renovacion').eq('paid_on', todayBogota())
-  if (lenderId) q = q.eq('lender_id', lenderId)
+  q = byLenders(q, lenderId)
   const { data } = await q
   return sumBy(data || [], 'amount')
 }
@@ -46,13 +47,17 @@ router.get('/dashboard', auth(), h(async (req, res) => {
 
   if (role === 'administrador') {
     const [{ data: users }, { data: bal }, s, { data: funds }] = await Promise.all([
-      supabase.from('users').select('role, active'),
-      supabase.from('credit_balances').select('balance, capital_balance, overdue_amount, customer_id').eq('status', 'activo'),
-      series(),
-      supabase.from('fund_accounts').select('kind, balance')
+      supabase.from('users').select('id, role, active'),
+      byLenders(supabase.from('credit_balances').select('balance, capital_balance, overdue_amount, customer_id').eq('status', 'activo'), req.siteLenders),
+      series(req.siteLenders),
+      supabase.from('fund_accounts').select('kind, balance, user_id, site_id')
     ])
-    const recaudoHoy = await collectedToday()
-    const count = (r) => (users || []).filter((u) => u.role === r && u.active).length
+    const { data: site } = req.siteId ? await supabase.from('sites').select('id, name, own_capital').eq('id', req.siteId).maybeSingle() : { data: null }
+    const bizSite = site?.own_capital ? site.id : null
+    const recaudoHoy = await collectedToday(req.siteLenders)
+    const count = (r) => (r === 'prestamista' && req.siteLenders
+      ? (users || []).filter((u) => u.role === r && u.active && req.siteLenders.includes(u.id)).length
+      : r === 'cliente' && req.siteLenders ? new Set((bal || []).map((b) => b.customer_id)).size : (users || []).filter((u) => u.role === r && u.active).length)
     const enMora = sumBy(bal || [], 'overdue_amount')
     const cartera = sumBy(bal || [], 'balance')
     return res.send({
@@ -61,8 +66,9 @@ router.get('/dashboard', auth(), h(async (req, res) => {
         carteraActiva: cartera, capitalPorCobrar: sumBy(bal || [], 'capital_balance'), recaudoHoy, enMora,
         creditosActivos: (bal || []).length, clientesEnMora: new Set((bal || []).filter((b) => Number(b.overdue_amount) > 0).map((b) => b.customer_id)).size,
         prestamistas: count('prestamista'), clientes: count('cliente'),
-        saldoNegocio: sumBy((funds || []).filter((f) => f.kind === 'negocio'), 'balance'),
-        cajasPrestamistas: sumBy((funds || []).filter((f) => f.kind === 'prestamista'), 'balance')
+        saldoNegocio: sumBy((funds || []).filter((f) => f.kind === 'negocio' && (f.site_id ?? null) === bizSite), 'balance'),
+        capitalSede: bizSite ? site.name : null,
+        cajasPrestamistas: sumBy((funds || []).filter((f) => f.kind === 'prestamista' && (!req.siteLenders || req.siteLenders.includes(f.user_id))), 'balance')
       },
       series: s,
       cartera: [{ name: 'Al día', value: Math.max(0, cartera - enMora) }, { name: 'En mora', value: enMora }]

@@ -157,3 +157,12 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 - Endpoints: `GET /conductores` (`?activos=1`), `POST /conductores` y `PUT /conductores/:id` (administrador). Desactivar un conductor lo quita de sus vehículos.
 - Alerta en el vehículo cuando la licencia del conductor vence en 30 días o ya venció.
 - Los mantenimientos siguen como en KU-015.
+
+## KU-017 · Sedes (cobros por ciudad)
+
+- Cada prestamista (rutero) pertenece a una sede (`users.site_id`). Clientes, créditos, pagos, gastos, rutas, morosos, mapa, vehículos, reportes y dashboard se filtran por la sede de su prestamista.
+- El administrador elige la sede con `?sede=<id>` (el frontend lo envía en todas las peticiones desde el selector de la barra superior). Sin `sede` ve todo el negocio.
+- `GET /dashboard/sedes`: comparativo por sede (cartera, mora, recaudo hoy y del mes, colocado del mes, cajas y capital).
+- `PUT /sedes/:id/ruteros` asigna los prestamistas de una sede. `sedes` admite `ownCapital`.
+- Capital: cada sede usa el capital general o uno aparte (`sites.own_capital`). Con capital aparte, `fund_site_account` crea su cuenta "negocio" y las asignaciones, entregas de cierre y traslados de sus ruteros usan esa cuenta (`fund_business_account_for`). Aportes y retiros se hacen con la sede elegida.
+- Para volver al capital general, la cuenta de la sede debe estar en cero.

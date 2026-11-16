@@ -6,6 +6,7 @@ const { auth, ADMIN, STAFF, toUserDTO, USER_COLUMNS } = require('../auth')
 const { audit } = require('../audit')
 const { score } = require('../lib/scoring')
 const { currentOrg } = require('../tenant')
+const { bySite } = require('../site')
 
 const router = express.Router()
 const DOC_TYPES = ['CC', 'CE', 'TI', 'PA', 'PPT', 'NIT']
@@ -48,9 +49,11 @@ const toDTO = (c, extra = {}) => ({
 })
 
 // El prestamista solo ve y edita los clientes que tiene asignados.
-const scoped = (req, q) => (req.user.role === 'prestamista' ? q.eq('lender_id', req.user.id) : q)
+const scoped = (req, q) => (req.user.role === 'prestamista' ? q.eq('lender_id', req.user.id) : bySite(req, q))
+// La ficha de un cliente se abre aunque sea de otra sede (por ejemplo, desde el buscador).
+const mineOnly = (req, q) => (req.user.role === 'prestamista' ? q.eq('lender_id', req.user.id) : q)
 const loadOne = async (req, id) => {
-  const { data } = await scoped(req, supabase.from('customers').select('*, lender:users!customers_lender_id_fkey(id, name, last_name)').eq('id', id)).maybeSingle()
+  const { data } = await mineOnly(req, supabase.from('customers').select('*, lender:users!customers_lender_id_fkey(id, name, last_name)').eq('id', id)).maybeSingle()
   return data
 }
 
@@ -142,9 +145,9 @@ router.get('/clientes', auth(STAFF), h(async (req, res) => {
 
 // Prestamistas activos (para asignar clientes y créditos).
 router.get('/prestamistas', auth(STAFF), h(async (req, res) => {
-  const { data, error } = await supabase.from('users').select('id, name, last_name').eq('role', 'prestamista').eq('active', true).order('name')
+  const { data, error } = await bySite(req, supabase.from('users').select('id, name, last_name, site_id').eq('role', 'prestamista').eq('active', true).order('name'), 'id')
   if (error) throw error
-  res.send(data.map((u) => ({ id: u.id, fullName: fullName(u) })))
+  res.send(data.map((u) => ({ id: u.id, fullName: fullName(u), siteId: u.site_id })))
 }))
 
 router.get('/clientes/:id', auth(STAFF), h(async (req, res) => {

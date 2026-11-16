@@ -31,15 +31,20 @@ const warehouseFilter = async (req) => {
 }
 
 // ---------- Sedes ----------
-const siteDTO = (s) => ({ id: s.id, name: s.name, city: s.city, address: s.address, phone: s.phone, active: s.active })
+const siteDTO = (s, extra = {}) => ({ id: s.id, name: s.name, city: s.city, address: s.address, phone: s.phone, active: s.active, ownCapital: s.own_capital, ...extra })
 router.get('/sedes', auth(STAFF), h(async (req, res) => {
   let q = supabase.from('sites').select('*').order('id')
   if (req.query.activas === '1') q = q.eq('active', true)
-  const { data, error } = await q
+  const [{ data, error }, { data: lenders }] = await Promise.all([q, supabase.from('users').select('id, name, last_name, site_id, active').eq('role', 'prestamista')])
   if (error) throw error
-  res.send(data.map(siteDTO))
+  // Ruteros de cada sede.
+  res.send(data.map((s) => siteDTO(s, { lenders: (lenders || []).filter((u) => u.site_id === s.id).map((u) => ({ id: u.id, fullName: `${u.name} ${u.last_name || ''}`.trim(), active: u.active })) })))
 }))
-const siteRow = (b) => ({ name: clean(b.name), city: clean(b.city), address: clean(b.address), phone: clean(b.phone), active: b.active !== false })
+const siteRow = (b) => {
+  const r = { name: clean(b.name), city: clean(b.city), address: clean(b.address), phone: clean(b.phone), active: b.active !== false }
+  if (typeof b.ownCapital === 'boolean') r.own_capital = b.ownCapital
+  return r
+}
 router.post('/sedes', auth(ADMIN), h(async (req, res) => {
   const b = req.body || {}
   if (!clean(b.name)) return fail(res, 'El nombre de la sede es requerido', 400)
@@ -58,11 +63,28 @@ router.put('/sedes/:id', auth(ADMIN), h(async (req, res) => {
     const { data: gen } = await supabase.from('warehouses').select('id').eq('site_id', id).eq('is_general', true).maybeSingle()
     if (gen) return fail(res, 'La sede de la bodega principal no se puede desactivar', 400)
   }
+  // Para volver al capital general, la cuenta de capital de la sede debe quedar en cero.
+  if (b.ownCapital === false) {
+    const { data: acc } = await supabase.from('fund_accounts').select('balance').eq('kind', 'negocio').eq('site_id', id).maybeSingle()
+    if (acc && Number(acc.balance) !== 0) return fail(res, `El capital aparte de esta sede tiene ${Number(acc.balance).toLocaleString('es-CO')}. Retíralo o asígnalo antes de pasarla al capital general`, 400)
+  }
   const { data, error } = await supabase.from('sites').update(siteRow(b)).eq('id', id).select('*').maybeSingle()
   if (error) return error.code === '23505' ? fail(res, 'Ya existe una sede con ese nombre', 409) : fail(res, error)
   if (!data) return fail(res, 'Sede no encontrada', 404)
   await audit(req, 'editar', 'sede', id)
   res.send(siteDTO(data))
+}))
+
+// Ruteros de una sede (KU-017): los marcados quedan en la sede; los que se desmarcan quedan sin sede.
+router.put('/sedes/:id/ruteros', auth(ADMIN), h(async (req, res) => {
+  const id = Number(req.params.id)
+  const ids = (Array.isArray(req.body?.lenderIds) ? req.body.lenderIds : []).map(Number).filter(Boolean)
+  const { data: site } = await supabase.from('sites').select('id, name').eq('id', id).maybeSingle()
+  if (!site) return fail(res, 'Sede no encontrada', 404)
+  await supabase.from('users').update({ site_id: null }).eq('site_id', id).eq('role', 'prestamista')
+  if (ids.length) await supabase.from('users').update({ site_id: id }).in('id', ids).eq('role', 'prestamista')
+  await audit(req, 'asignar_ruteros', 'sede', id, { lenders: ids })
+  res.send({ ok: true })
 }))
 
 // ---------- Bodegas ----------

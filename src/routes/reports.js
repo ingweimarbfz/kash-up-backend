@@ -8,6 +8,7 @@ const express = require('express')
 const supabase = require('../db')
 const { h, fail, clean, todayBogota } = require('../http')
 const { auth, ADMIN, STAFF } = require('../auth')
+const { bySite, byLenders } = require('../site')
 
 const router = express.Router()
 const fullName = (x) => (x ? `${x.name} ${x.last_name || ''}`.trim() : null)
@@ -42,6 +43,7 @@ router.get('/reportes/recaudo', auth(ADMIN), h(async (req, res) => {
   const { desde, hasta } = range(req.query)
   let q = supabase.from('payments').select('id, kind, amount, method, paid_on, lender_id').eq('status', 'aplicado').neq('kind', 'renovacion').gte('paid_on', desde).lte('paid_on', hasta).limit(20000)
   if (Number(req.query.prestamista)) q = q.eq('lender_id', Number(req.query.prestamista))
+  q = bySite(req, q)
   const [{ data: pays, error }, all] = await Promise.all([q, lenders()])
   if (error) throw error
   // Parte de interés de lo cobrado: proporcional al interés de cada cuota (el abono a capital es solo capital).
@@ -77,6 +79,7 @@ router.get('/reportes/colocacion', auth(ADMIN), h(async (req, res) => {
   let q = supabase.from('credits').select('id, number, kind, principal, total_interest, total_amount, disbursed_amount, payoff_amount, renewed_from_id, disbursement_date, lender_id, status, customer:customers(name, last_name)')
     .neq('status', 'anulado').gte('disbursement_date', desde).lte('disbursement_date', hasta).order('disbursement_date', { ascending: false }).limit(5000)
   if (Number(req.query.prestamista)) q = q.eq('lender_id', Number(req.query.prestamista))
+  q = bySite(req, q)
   const [{ data: cr, error }, all] = await Promise.all([q, lenders()])
   if (error) throw error
   const key = bucketOf(desde, hasta)
@@ -101,10 +104,10 @@ router.get('/reportes/colocacion', auth(ADMIN), h(async (req, res) => {
 
 // ---------- Cartera (foto de hoy) ----------
 const TIERS = [['Al día', -Infinity, 0], ['1-7', 1, 7], ['8-30', 8, 30], ['31-60', 31, 60], ['60+', 61, Infinity]]
-const portfolio = async (lenderId = null) => {
+const portfolio = async (lenderId = null) => { // un id, una lista (sede) o null
   const today = todayBogota()
   let q = supabase.from('credit_balances').select('credit_id, lender_id, customer_id, balance, capital_balance, overdue_amount, overdue_count, oldest_overdue_date').eq('status', 'activo')
-  if (lenderId) q = q.eq('lender_id', lenderId)
+  q = byLenders(q, lenderId)
   const { data: bal, error } = await q
   if (error) throw error
   return bal.map((b) => {
@@ -123,7 +126,7 @@ const summarize = (rows) => {
 }
 
 router.get('/reportes/cartera', auth(ADMIN), h(async (req, res) => {
-  const [rows, all] = await Promise.all([portfolio(Number(req.query.prestamista) || null), lenders()])
+  const [rows, all] = await Promise.all([portfolio(Number(req.query.prestamista) || req.siteLenders), lenders()])
   res.send({
     totals: summarize(rows),
     tiers: TIERS.map(([k]) => { const r = rows.filter((x) => x.tier === k); return { key: k, credits: r.length, balance: sum(r, (x) => n(x.balance)), overdue: sum(r, (x) => n(x.overdue_amount)) } }),
@@ -135,9 +138,9 @@ router.get('/reportes/cartera', auth(ADMIN), h(async (req, res) => {
 router.get('/reportes/resultados', auth(ADMIN), h(async (req, res) => {
   const { desde, hasta } = range(req.query)
   const [{ data: pays }, { data: exps }, { data: cr }] = await Promise.all([
-    supabase.from('payments').select('id, kind, amount, paid_on').eq('status', 'aplicado').neq('kind', 'renovacion').gte('paid_on', desde).lte('paid_on', hasta).limit(20000),
-    supabase.from('expenses').select('category, amount, spent_on').eq('status', 'aplicado').gte('spent_on', desde).lte('spent_on', hasta),
-    supabase.from('credits').select('discount_amount').neq('status', 'anulado').gte('disbursement_date', desde).lte('disbursement_date', hasta)
+    bySite(req, supabase.from('payments').select('id, kind, amount, paid_on').eq('status', 'aplicado').neq('kind', 'renovacion').gte('paid_on', desde).lte('paid_on', hasta).limit(20000)),
+    bySite(req, supabase.from('expenses').select('category, amount, spent_on').eq('status', 'aplicado').gte('spent_on', desde).lte('spent_on', hasta)),
+    bySite(req, supabase.from('credits').select('discount_amount').neq('status', 'anulado').gte('disbursement_date', desde).lte('disbursement_date', hasta))
   ])
   const ids = (pays || []).map((p) => p.id)
   const intByPay = {}
@@ -231,25 +234,25 @@ router.get('/dashboard/extra', auth(STAFF), h(async (req, res) => {
   const from = addDays(today, -13)
   const admin = req.user.role === 'administrador'
   let pq = supabase.from('payments').select('amount, paid_on, lender_id').eq('status', 'aplicado').neq('kind', 'renovacion').gte('paid_on', from)
-  if (!admin) pq = pq.eq('lender_id', req.user.id)
-  const [{ data: pays }, rows] = await Promise.all([pq, portfolio(admin ? null : req.user.id)])
+  pq = admin ? bySite(req, pq) : pq.eq('lender_id', req.user.id)
+  const [{ data: pays }, rows] = await Promise.all([pq, portfolio(admin ? req.siteLenders : req.user.id)])
   const daily = days(from, today).map((d) => ({ label: d, recaudado: sum((pays || []).filter((p) => p.paid_on === d), (p) => n(p.amount)) }))
   const out = { daily, portfolio: summarize(rows), tiers: TIERS.map(([k]) => ({ key: k, balance: sum(rows.filter((x) => x.tier === k), (x) => n(x.balance)) })) }
 
   if (admin) {
     const { buildRoute } = require('./collection')
-    const all = (await lenders()).filter((l) => l.active)
+    const all = (await lenders()).filter((l) => l.active && (!req.siteLenders || req.siteLenders.includes(l.id)))
     const { data: closures } = await supabase.from('route_closures').select('lender_id').eq('day', today)
     out.routes = await Promise.all(all.map(async (l) => {
       const r = await buildRoute(l.id, today)
       return { id: l.id, lender: fullName(l), toCollect: r.totals.toCollect, collected: r.totals.collected, stops: r.totals.stops, done: r.totals.paid + r.totals.visited, closed: (closures || []).some((c) => c.lender_id === l.id) }
     }))
     const [{ count: reqs }, { count: trs }] = await Promise.all([
-      supabase.from('credit_requests').select('id', { count: 'exact', head: true }).eq('status', 'pendiente'),
-      supabase.from('cash_transfers').select('id', { count: 'exact', head: true }).eq('status', 'pendiente')
+      bySite(req, supabase.from('credit_requests').select('id', { count: 'exact', head: true }).eq('status', 'pendiente')),
+      bySite(req, supabase.from('cash_transfers').select('id', { count: 'exact', head: true }).eq('status', 'pendiente'), 'from_lender_id')
     ])
     const { alertsOf } = require('./vehicles')
-    const { data: veh } = await supabase.from('vehicles').select('*').neq('status', 'inactivo')
+    const { data: veh } = await bySite(req, supabase.from('vehicles').select('*').neq('status', 'inactivo'), 'collector_id')
     const vehicleAlerts = (veh || []).filter((v) => alertsOf(v, undefined, today).some((a) => a.level === 'bad')).length
     out.pending = { creditRequests: reqs || 0, cashTransfers: trs || 0, vehicleAlerts }
     const late = rows.filter((r) => r.daysLate > 0).sort((a, b) => n(b.overdue_amount) - n(a.overdue_amount)).slice(0, 5)
@@ -265,6 +268,42 @@ router.get('/dashboard/extra', auth(STAFF), h(async (req, res) => {
     out.route = r.totals
   }
   res.send(out)
+}))
+
+// ---------------------------------------------------------------------
+// Resumen por sede (KU-017): para comparar los cobros de cada ciudad en la vista "Todas las sedes".
+// ---------------------------------------------------------------------
+router.get('/dashboard/sedes', auth(ADMIN), h(async (req, res) => {
+  const today = todayBogota()
+  const month = `${today.slice(0, 8)}01`
+  const [{ data: sites }, { data: users }, { data: bal }, { data: pays }, { data: cr }, { data: accs }] = await Promise.all([
+    supabase.from('sites').select('id, name, city, own_capital').eq('active', true).order('id'),
+    supabase.from('users').select('id, site_id, active').eq('role', 'prestamista'),
+    supabase.from('credit_balances').select('lender_id, customer_id, balance, overdue_amount').eq('status', 'activo'),
+    supabase.from('payments').select('lender_id, amount, paid_on').eq('status', 'aplicado').neq('kind', 'renovacion').gte('paid_on', month),
+    supabase.from('credits').select('lender_id, principal').neq('status', 'anulado').gte('disbursement_date', month),
+    supabase.from('fund_accounts').select('kind, site_id, user_id, balance')
+  ])
+  const build = (id, name, city, ownCapital, ids) => {
+    const b = (bal || []).filter((x) => ids.includes(x.lender_id))
+    const p = (pays || []).filter((x) => ids.includes(x.lender_id))
+    const balance = sum(b, (x) => n(x.balance))
+    const overdue = sum(b, (x) => n(x.overdue_amount))
+    return {
+      id, name, city, ownCapital,
+      lenders: (users || []).filter((u) => ids.includes(u.id) && u.active).length,
+      customers: new Set(b.map((x) => x.customer_id)).size, credits: b.length, portfolio: balance, overdue,
+      overduePct: balance ? Math.round((overdue / balance) * 1000) / 10 : 0,
+      collectedToday: sum(p.filter((x) => x.paid_on === today), (x) => n(x.amount)), collectedMonth: sum(p, (x) => n(x.amount)),
+      placedMonth: sum((cr || []).filter((x) => ids.includes(x.lender_id)), (x) => n(x.principal)),
+      cash: sum((accs || []).filter((a) => a.kind === 'prestamista' && ids.includes(a.user_id)), (a) => n(a.balance)),
+      capital: ownCapital ? n((accs || []).find((a) => a.kind === 'negocio' && a.site_id === id)?.balance) : null
+    }
+  }
+  const rows = (sites || []).map((st) => build(st.id, st.name, st.city, st.own_capital, (users || []).filter((u) => u.site_id === st.id).map((u) => u.id)))
+  const loose = (users || []).filter((u) => !u.site_id).map((u) => u.id)
+  if (loose.length) rows.push(build(null, 'Sin sede', null, false, loose))
+  res.send({ rows, general: n((accs || []).find((a) => a.kind === 'negocio' && !a.site_id)?.balance) })
 }))
 
 module.exports = router
