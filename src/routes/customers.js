@@ -5,10 +5,11 @@ const { h, fail, clean, num, EMAIL_RE, PHONE_RE, DOC_RE, imageError, todayBogota
 const { auth, ADMIN, STAFF, toUserDTO, USER_COLUMNS } = require('../auth')
 const { audit } = require('../audit')
 const { score } = require('../lib/scoring')
+const { currentOrg } = require('../tenant')
 
 const router = express.Router()
 const DOC_TYPES = ['CC', 'CE', 'TI', 'PA', 'PPT', 'NIT']
-const LIST_COLUMNS = 'id, doc_type, identification, name, last_name, phone, address, neighborhood, city, photo_thumb, lender_id, user_id, status, created_at, lender:users!customers_lender_id_fkey(id, name, last_name)'
+const LIST_COLUMNS = 'id, doc_type, identification, name, last_name, phone, address, neighborhood, city, photo_thumb, utility_bill_at, lender_id, user_id, status, created_at, lender:users!customers_lender_id_fkey(id, name, last_name)'
 
 const fullName = (x) => (x ? `${x.name} ${x.last_name || ''}`.trim() : null)
 const toDTO = (c, extra = {}) => ({
@@ -31,6 +32,9 @@ const toDTO = (c, extra = {}) => ({
   photoThumb: c.photo_thumb ?? null,
   idPhotoUrl: c.id_photo_url ?? null,
   idPhotoBackUrl: c.id_photo_back_url ?? null,
+  utilityBillUrl: c.utility_bill_url ?? null,
+  utilityBillAt: c.utility_bill_at ?? null,
+  hasUtilityBill: Boolean(c.utility_bill_at || c.utility_bill_url),
   lat: c.lat ?? null,
   lng: c.lng ?? null,
   lenderId: c.lender_id,
@@ -50,7 +54,7 @@ const loadOne = async (req, id) => {
   return data
 }
 
-const validate = (b) => {
+const validate = (b, isNew = false) => {
   const errors = []
   if (!DOC_TYPES.includes(b.docType || 'CC')) errors.push('Tipo de documento inválido')
   if (!clean(b.identification)) errors.push('La identificación es requerida')
@@ -62,7 +66,8 @@ const validate = (b) => {
   if (clean(b.email) && !EMAIL_RE.test(clean(b.email))) errors.push('Correo no válido')
   if (!clean(b.address)) errors.push('La dirección es requerida')
   if (!clean(b.photoUrl)) errors.push('La foto del cliente es obligatoria')
-  for (const [k, label] of [['photoUrl', 'La foto'], ['photoThumb', 'La miniatura'], ['idPhotoUrl', 'La foto del documento (delantera)'], ['idPhotoBackUrl', 'La foto del documento (trasera)']]) {
+  if (isNew && !clean(b.utilityBillUrl)) errors.push('La foto del recibo de servicios (para comprobar la dirección) es obligatoria')
+  for (const [k, label] of [['photoUrl', 'La foto'], ['photoThumb', 'La miniatura'], ['idPhotoUrl', 'La foto del documento (delantera)'], ['idPhotoBackUrl', 'La foto del documento (trasera)'], ['utilityBillUrl', 'La foto del recibo de servicios']]) {
     const e = imageError(b[k], 900); if (e) errors.push(`${label}: ${e}`)
   }
   if (b.lat !== undefined && b.lat !== null && b.lat !== '' && !(Math.abs(Number(b.lat)) <= 90)) errors.push('Latitud inválida')
@@ -72,7 +77,8 @@ const validate = (b) => {
   return errors
 }
 
-const rowFrom = (b) => ({
+const rowFrom = (b) => {
+  const row = {
   doc_type: b.docType || 'CC',
   identification: clean(b.identification),
   name: clean(b.name),
@@ -94,7 +100,11 @@ const rowFrom = (b) => ({
   lng: num(b.lng),
   credit_limit: num(b.creditLimit),
   notes: clean(b.notes)
-})
+  }
+  // El recibo solo se toca si viene en la petición (no se borra al editar otros datos).
+  if (b.utilityBillUrl !== undefined && clean(b.utilityBillUrl)) row.utility_bill_url = clean(b.utilityBillUrl)
+  return row
+}
 
 // Valida que el prestamista asignado exista y tenga ese rol.
 const checkLender = async (id) => {
@@ -140,16 +150,18 @@ router.get('/prestamistas', auth(STAFF), h(async (req, res) => {
 router.get('/clientes/:id', auth(STAFF), h(async (req, res) => {
   const c = await loadOne(req, Number(req.params.id))
   if (!c) return fail(res, 'Cliente no encontrado', 404)
-  const [{ data: credits }, { data: inst }, { data: bal }, { data: user }] = await Promise.all([
+  const [{ data: credits }, { data: inst }, { data: bal }, { data: user }, { data: transfers }] = await Promise.all([
     supabase.from('credits').select('id, number, kind, principal, total_amount, frequency, installments_count, disbursement_date, status, created_at').eq('customer_id', c.id).order('created_at', { ascending: false }),
     supabase.from('installments').select('due_date, status, paid_at, credit:credits!inner(customer_id)').eq('credit.customer_id', c.id),
     supabase.from('credit_balances').select('credit_id, balance, overdue_amount, overdue_count, next_due_date, paid_count').eq('customer_id', c.id),
-    c.user_id ? supabase.from('users').select('id, username, active').eq('id', c.user_id).maybeSingle() : Promise.resolve({ data: null })
+    c.user_id ? supabase.from('users').select('id, username, active').eq('id', c.user_id).maybeSingle() : Promise.resolve({ data: null }),
+    supabase.from('customer_transfers').select('id, old_address, new_address, credits_moved, balance_moved, note, created_at, from:users!customer_transfers_from_lender_id_fkey(name, last_name), to:users!customer_transfers_to_lender_id_fkey(name, last_name), user:users!customer_transfers_user_id_fkey(name, last_name)').eq('customer_id', c.id).order('id', { ascending: false })
   ])
   const byId = Object.fromEntries((bal || []).map((b) => [b.credit_id, b]))
   res.send(toDTO(c, {
     score: score({ installments: inst || [], credits: credits || [], today: todayBogota() }),
     user: user ? { id: user.id, username: user.username, active: user.active } : null,
+    transfers: (transfers || []).map((t) => ({ id: t.id, from: fullName(t.from), to: fullName(t.to), oldAddress: t.old_address, newAddress: t.new_address, creditsMoved: t.credits_moved, balanceMoved: Number(t.balance_moved), note: t.note, createdAt: t.created_at, user: fullName(t.user) })),
     credits: (credits || []).map((k) => ({
       id: k.id, number: k.number, kind: k.kind, principal: Number(k.principal), totalAmount: Number(k.total_amount), frequency: k.frequency,
       installmentsCount: k.installments_count, disbursementDate: k.disbursement_date, status: k.status,
@@ -161,11 +173,11 @@ router.get('/clientes/:id', auth(STAFF), h(async (req, res) => {
 
 router.post('/clientes', auth(STAFF), h(async (req, res) => {
   const b = req.body || {}
-  const errors = validate(b)
+  const errors = validate(b, true)
   if (errors.length) return fail(res, errors.join('. '), 400)
   let lenderId = req.user.role === 'prestamista' ? req.user.id : await checkLender(b.lenderId)
   if (lenderId === undefined) return fail(res, 'El prestamista asignado no existe o está inactivo', 400)
-  const row = { ...rowFrom(b), lender_id: lenderId, created_by: req.user.id }
+  const row = { ...rowFrom(b), utility_bill_at: new Date().toISOString(), lender_id: lenderId, created_by: req.user.id }
   if (req.user.role === 'administrador' && b.status) row.status = b.status
   const { data, error } = await supabase.from('customers').insert(row).select('id').single()
   if (error) return dupMessage(error) ? fail(res, dupMessage(error), 409) : fail(res, error)
@@ -181,10 +193,15 @@ router.put('/clientes/:id', auth(STAFF), h(async (req, res) => {
   const errors = validate(b)
   if (errors.length) return fail(res, errors.join('. '), 400)
   const patch = rowFrom(b)
+  if (patch.utility_bill_url && patch.utility_bill_url !== current.utility_bill_url) patch.utility_bill_at = new Date().toISOString()
   if (req.user.role === 'administrador') {
     const lenderId = await checkLender(b.lenderId)
     if (lenderId === undefined) return fail(res, 'El prestamista asignado no existe o está inactivo', 400)
-    patch.lender_id = lenderId
+    // Cambiar de prestamista es un traslado de ruta: sus créditos activos pasan al nuevo prestamista.
+    if (b.lenderId !== undefined && (lenderId || null) !== (current.lender_id || null)) {
+      const { error: te } = await supabase.rpc('transfer_customer', { p: { org_id: currentOrg(), customer_id: id, to_lender_id: lenderId, note: 'Cambio de prestamista desde la ficha', user_id: req.user.id } })
+      if (te) return te.code === 'P0001' ? fail(res, te.message, 400) : fail(res, te)
+    }
     if (b.status) patch.status = b.status
   } else {
     delete patch.credit_limit // el cupo lo define el administrador
@@ -193,6 +210,46 @@ router.put('/clientes/:id', auth(STAFF), h(async (req, res) => {
   if (error) return dupMessage(error) ? fail(res, dupMessage(error), 409) : fail(res, error)
   await audit(req, 'editar', 'cliente', id)
   res.send(toDTO(await loadOne(req, id)))
+}))
+
+// Subir o cambiar la foto del recibo de servicios.
+router.put('/clientes/:id/recibo', auth(STAFF), h(async (req, res) => {
+  const id = Number(req.params.id)
+  const current = await loadOne(req, id)
+  if (!current) return fail(res, 'Cliente no encontrado', 404)
+  const url = clean(req.body?.utilityBillUrl)
+  if (!url) return fail(res, 'Toma la foto del recibo de servicios', 400)
+  const e = imageError(url, 900)
+  if (e) return fail(res, `Recibo: ${e}`, 400)
+  const { error } = await supabase.from('customers').update({ utility_bill_url: url, utility_bill_at: new Date().toISOString() }).eq('id', id)
+  if (error) throw error
+  await audit(req, 'recibo', 'cliente', id)
+  res.send(toDTO(await loadOne(req, id)))
+}))
+
+// Traslado de ruta: el cliente se muda o pasa a otro prestamista. Sus créditos activos pasan al nuevo prestamista.
+// Lo hace el administrador o el prestamista que hoy tiene al cliente.
+router.post('/clientes/:id/traslado', auth(STAFF), h(async (req, res) => {
+  const id = Number(req.params.id)
+  const current = await loadOne(req, id)
+  if (!current) return fail(res, 'Cliente no encontrado', 404)
+  const b = req.body || {}
+  const to = await checkLender(b.lenderId)
+  if (to === undefined) return fail(res, 'El prestamista de destino no existe o está inactivo', 400)
+  if (!to) return fail(res, 'Elige el prestamista de la nueva ruta', 400)
+  const moving = clean(b.address) && clean(b.address) !== current.address
+  if (moving && !clean(b.utilityBillUrl)) return fail(res, 'Toma la foto del recibo de servicios de la nueva dirección', 400)
+  const e = imageError(b.utilityBillUrl, 900)
+  if (e) return fail(res, `Recibo: ${e}`, 400)
+  if (b.lat !== undefined && b.lat !== null && b.lat !== '' && !(Math.abs(Number(b.lat)) <= 90)) return fail(res, 'Latitud inválida', 400)
+  const p = { org_id: currentOrg(), customer_id: id, to_lender_id: to, note: clean(b.note), user_id: req.user.id }
+  if (moving) Object.assign(p, { address: clean(b.address), neighborhood: clean(b.neighborhood) || '', city: clean(b.city) || current.city || '', lat: num(b.lat) ?? '', lng: num(b.lng) ?? '', utility_bill_url: clean(b.utilityBillUrl) })
+  else if (clean(b.utilityBillUrl)) p.utility_bill_url = clean(b.utilityBillUrl)
+  const { data: tid, error } = await supabase.rpc('transfer_customer', { p })
+  if (error) return error.code === 'P0001' ? fail(res, error.message, 400) : fail(res, error)
+  await audit(req, 'trasladar', 'cliente', id, { from: current.lender_id, to, moving: Boolean(moving), transfer: tid })
+  const { data } = await supabase.from('customers').select('*, lender:users!customers_lender_id_fkey(id, name, last_name)').eq('id', id).single()
+  res.send(toDTO(data))
 }))
 
 // Crea (o actualiza) el usuario con rol cliente para que consulte sus créditos.
