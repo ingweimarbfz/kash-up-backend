@@ -176,3 +176,10 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 - Resúmenes: agenda de la mañana y resumen del cierre a la hora configurada (revisión cada 10 minutos, hora de Colombia), uno por sede y uno general.
 - Rutas: `GET/PUT/DELETE /notificaciones/bot`, `GET /notificaciones`, `POST /notificaciones/buscar-grupos`, `POST|PUT|DELETE /notificaciones/canales`, `POST /notificaciones/canales/:id/prueba`, `POST /notificaciones/resumen/manana|cierre`, `GET /mis-notificaciones`, `POST /mis-notificaciones/:id/unirme` (enlace personal de 24 horas).
 - `PUBLIC_APP_URL` (opcional): enlace "Abrir en KashUp" en cada aviso. Si no está, se usa el primer `CORS_ORIGIN` con https.
+
+## KU-020 · Galería de productos y promociones
+
+- Migración `20261116000016_productos_promociones.sql`: `products.gallery` (hasta 3 imágenes adicionales), tabla `promotions` y precio de lista y promoción en `credit_items` (`create_credit` actualizada).
+- `src/promo.js`: una promoción aplica según rango de fechas y horas, franja horaria diaria y días de la semana (hora de Colombia). Si varias aplican, gana el precio más bajo.
+- `GET /inventario/productos` trae `promo` y `finalPrice`; `GET /inventario/productos/:id` es la ficha completa (galería, existencias por bodega, próximas promociones).
+- `GET|POST|PUT|DELETE /promociones`. Al crear un crédito de producto el precio base es el de la promoción vigente y queda guardada en el crédito.
