@@ -194,3 +194,11 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 
 - `GET /reportes/recaudo?detalle=1` agrega el detalle de pagos y `GET /reportes/cartera?detalle=1` los créditos atrasados, para la hoja imprimible.
 - En Reportes (solo administrador): "Ver PDF" de la pestaña actual e "Informe completo" con las cuatro secciones, en hoja carta con encabezado del negocio, listos para imprimir o guardar como PDF.
+
+## KU-023 · Bitácora del prestamista
+- `GET /bitacora?desde&hasta&prestamista` (solo administrador, respeta la sede elegida).
+- No crea tablas: lee `audit_log`, que ya guarda cada acción con su usuario. La migración `20261116000018_bitacora.sql` solo agrega dos índices para que la consulta por prestamista y fecha sea rápida.
+- Muestra lo que compromete dinero: pagos y abonos, anulaciones, gastos, tanqueos y mantenimientos, créditos y solicitudes, traslados de caja, capital asignado o retirado, cierres y reaperturas de jornada, clientes nuevos o trasladados e inicios de sesión.
+- El detalle (valor, recibo, cliente, ubicación) se consulta al momento a partir del registro original, así que la bitácora no duplica datos.
+- Alertas: faltante o sobrante en el cierre, pagos o gastos anulados, pagos antes de las 5 a. m. o desde las 9 p. m., pagos en efectivo sin ubicación y gastos de $ 150.000 o más.
+- Resumen por prestamista: cobrado, gastos, prestado, primera y última actividad, faltantes y número de alertas.
