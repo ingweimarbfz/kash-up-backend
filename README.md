@@ -115,6 +115,11 @@ aportado, configurable). Las reglas están en la base de datos (`apply_fund_move
 - `GET /dashboard/extra`: recaudo de los últimos 14 días, salud de la cartera y, según el rol, avance de las rutas y mayores atrasos (admin) o promesas de pago y avance de la ruta (prestamista).
 - `GET /buscar?q=`: busca a la vez clientes (nombre, cédula, celular), créditos, recibos (`RC-0003`), gastos (`GA-0002`), productos y usuarios. El prestamista solo ve lo suyo.
 
+## Traslados de dinero y créditos adicionales (KU-014)
+
+- **Traslado entre prestamistas:** el prestamista no le pasa dinero directo a otro. Desde "Mi caja" envía el valor al negocio (`POST /traslados-caja`) y queda pendiente. El administrador, en "Capital y cajas", lo entrega al prestamista pedido o a otro, o lo devuelve (`POST /traslados-caja/:id/entregar|rechazar`). Los movimientos son del tipo `traslado` y no consumen la reserva mínima del negocio.
+- **Varios créditos por cliente:** si el prestamista crea un crédito (que no sea renovación) para un cliente que ya tiene uno activo, se guarda como solicitud (`credit_requests`, número `SC-0001`) y responde 202. El administrador la aprueba en "Solicitudes" y el crédito se crea con fecha de hoy desde la caja del prestamista. La base de datos lo exige con el trigger `check_credit_lender`. El administrador puede crear créditos adicionales directamente.
+
 ## Inventario por bodegas
 
 Cada negocio tiene una **bodega principal** (en su sede principal) y puede crear sedes y varias bodegas por sede.

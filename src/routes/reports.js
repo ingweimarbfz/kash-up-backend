@@ -239,6 +239,11 @@ router.get('/dashboard/extra', auth(STAFF), h(async (req, res) => {
       const r = await buildRoute(l.id, today)
       return { id: l.id, lender: fullName(l), toCollect: r.totals.toCollect, collected: r.totals.collected, stops: r.totals.stops, done: r.totals.paid + r.totals.visited, closed: (closures || []).some((c) => c.lender_id === l.id) }
     }))
+    const [{ count: reqs }, { count: trs }] = await Promise.all([
+      supabase.from('credit_requests').select('id', { count: 'exact', head: true }).eq('status', 'pendiente'),
+      supabase.from('cash_transfers').select('id', { count: 'exact', head: true }).eq('status', 'pendiente')
+    ])
+    out.pending = { creditRequests: reqs || 0, cashTransfers: trs || 0 }
     const late = rows.filter((r) => r.daysLate > 0).sort((a, b) => n(b.overdue_amount) - n(a.overdue_amount)).slice(0, 5)
     if (late.length) {
       const { data: cr } = await supabase.from('credits').select('id, number, customer:customers(name, last_name, photo_thumb)').in('id', late.map((r) => r.credit_id))

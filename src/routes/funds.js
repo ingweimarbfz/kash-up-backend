@@ -10,7 +10,7 @@ const express = require('express')
 const supabase = require('../db')
 const { currentOrg } = require('../tenant')
 const { h, fail, clean } = require('../http')
-const { auth, ADMIN } = require('../auth')
+const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
 
 const router = express.Router()
@@ -18,7 +18,7 @@ const p0001 = (res, e) => (e.code === 'P0001' ? fail(res, e.message, 400) : fail
 const fullName = (u) => (u ? `${u.name} ${u.last_name || ''}`.trim() : null)
 const MOVE_LABELS = {
   aporte: 'Aporte de capital', retiro: 'Retiro de capital', asignacion: 'Asignación', devolucion_asignacion: 'Devolución de asignación',
-  desembolso: 'Desembolso de crédito', reverso_desembolso: 'Anulación de crédito', recaudo: 'Recaudo', ajuste: 'Ajuste', gasto: 'Gasto', reverso_gasto: 'Anulación de gasto'
+  desembolso: 'Desembolso de crédito', reverso_desembolso: 'Anulación de crédito', recaudo: 'Recaudo', ajuste: 'Ajuste', gasto: 'Gasto', reverso_gasto: 'Anulación de gasto', traslado: 'Traslado'
 }
 
 const businessAccount = async () => {
@@ -136,6 +136,49 @@ router.get('/mi-caja', auth(['prestamista']), h(async (req, res) => {
   const { data, error } = acc ? await supabase.from('fund_movements').select(MOVE_SELECT).eq('account_id', acc.id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(100) : { data: [] }
   if (error) throw error
   res.send({ balance: Number(acc?.balance ?? 0), movements: data.map(movementDTO) })
+}))
+
+// ---------------------------------------------------------------------
+// Traslados de dinero entre prestamistas (KU-014). El dinero pasa por el administrador:
+// el prestamista lo envía al negocio y el administrador se lo entrega al otro prestamista (o lo devuelve).
+// ---------------------------------------------------------------------
+const TR_SELECT = 'id, number, amount, note, status, review_note, reviewed_at, created_at, from:users!cash_transfers_from_lender_id_fkey(id, name, last_name), to:users!cash_transfers_to_lender_id_fkey(id, name, last_name), deliveredTo:users!cash_transfers_delivered_to_id_fkey(id, name, last_name), reviewer:users!cash_transfers_reviewed_by_fkey(name, last_name)'
+const person = (u) => (u ? { id: u.id, fullName: fullName(u) } : null)
+const transferDTO = (t) => ({
+  id: t.id, number: t.number, amount: Number(t.amount), note: t.note, status: t.status, reviewNote: t.review_note, reviewedAt: t.reviewed_at, createdAt: t.created_at,
+  from: person(t.from), to: person(t.to), deliveredTo: person(t.deliveredTo), reviewer: fullName(t.reviewer)
+})
+
+router.get('/traslados-caja', auth(STAFF), h(async (req, res) => {
+  let q = supabase.from('cash_transfers').select(TR_SELECT).order('id', { ascending: false }).limit(200)
+  if (req.user.role === 'prestamista') q = q.or(`from_lender_id.eq.${req.user.id},delivered_to_id.eq.${req.user.id}`)
+  if (req.query.estado) q = q.eq('status', req.query.estado)
+  const { data, error } = await q
+  if (error) throw error
+  res.send(data.map(transferDTO))
+}))
+
+router.post('/traslados-caja', auth(['prestamista']), h(async (req, res) => {
+  const b = req.body || {}
+  const { data: id, error } = await supabase.rpc('request_cash_transfer', {
+    p: { org_id: currentOrg(), from_lender_id: req.user.id, to_lender_id: Number(b.toLenderId) || null, amount: Math.round(Number(b.amount) || 0), note: clean(b.note), user_id: req.user.id }
+  })
+  if (error) return p0001(res, error)
+  await audit(req, 'crear', 'traslado_caja', id, { amount: Number(b.amount), to: Number(b.toLenderId) || null })
+  const { data } = await supabase.from('cash_transfers').select(TR_SELECT).eq('id', id).single()
+  res.status(201).send(transferDTO(data))
+}))
+
+router.post('/traslados-caja/:id/:action(entregar|rechazar)', auth(ADMIN), h(async (req, res) => {
+  const b = req.body || {}
+  if (req.params.action === 'rechazar' && !clean(b.note)) return fail(res, 'Escribe el motivo del rechazo', 400)
+  const { error } = await supabase.rpc('resolve_cash_transfer', {
+    p: { org_id: currentOrg(), id: Number(req.params.id), action: req.params.action, to_lender_id: Number(b.toLenderId) || null, note: clean(b.note), user_id: req.user.id }
+  })
+  if (error) return p0001(res, error)
+  await audit(req, req.params.action, 'traslado_caja', Number(req.params.id), { to: Number(b.toLenderId) || null })
+  const { data } = await supabase.from('cash_transfers').select(TR_SELECT).eq('id', Number(req.params.id)).single()
+  res.send(transferDTO(data))
 }))
 
 module.exports = { router, availableFor }
