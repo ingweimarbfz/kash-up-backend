@@ -26,7 +26,9 @@ app.use(require('./routes/vehicles'))
 app.use(require('./routes/settings'))
 app.use(require('./routes/dashboard'))
 app.use(require('./routes/audit'))
+app.use(require('./routes/notifications'))
 
 app.use((req, res) => res.status(404).send({ message: 'Ruta no encontrada' }))
 
 app.listen(PORT, () => console.log(`API KashUp escuchando en el puerto ${PORT}`))
+require('./notify').startScheduler()

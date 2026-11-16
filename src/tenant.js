@@ -17,7 +17,8 @@ const TENANT_TABLES = new Set([
   'customers', 'interest_rates', 'product_categories', 'products', 'inventory_movements', 'discounts',
   'credits', 'credit_items', 'credit_references', 'installments', 'credit_balances',
   'sites', 'warehouses', 'warehouse_stock', 'fund_accounts', 'fund_movements', 'payments', 'payment_allocations',
-  'visits', 'expenses', 'route_closures', 'customer_transfers', 'cash_transfers', 'credit_requests', 'vehicles', 'vehicle_maintenances', 'vehicle_fuel_logs', 'vehicle_odometer_logs', 'drivers'
+  'visits', 'expenses', 'route_closures', 'customer_transfers', 'cash_transfers', 'credit_requests', 'vehicles', 'vehicle_maintenances', 'vehicle_fuel_logs', 'vehicle_odometer_logs', 'drivers',
+  'notification_settings', 'notification_channels', 'notification_log'
 ])
 
 const withOrg = (rows, org) => (Array.isArray(rows) ? rows.map((r) => ({ ...r, org_id: org })) : { ...rows, org_id: org })
@@ -41,4 +42,12 @@ const scopeClient = (supabase) => {
   return supabase
 }
 
-module.exports = { ctx, currentOrg, runAsOrg, scopeClient, TENANT_TABLES }
+// Ejecuta una tarea programada en el contexto de cada negocio activo.
+const forEachOrg = async (supabase, fn) => {
+  const { data } = await supabase.from('organizations').select('id').in('status', ['activa', 'prueba'])
+  for (const { id } of data || []) {
+    try { await runAsOrg(id, fn) } catch (e) { console.error(`Tarea del negocio ${id}:`, e.message) }
+  }
+}
+
+module.exports = { ctx, currentOrg, runAsOrg, scopeClient, forEachOrg, TENANT_TABLES }

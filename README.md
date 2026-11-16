@@ -166,3 +166,13 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 - `PUT /sedes/:id/ruteros` asigna los prestamistas de una sede. `sedes` admite `ownCapital`.
 - Capital: cada sede usa el capital general o uno aparte (`sites.own_capital`). Con capital aparte, `fund_site_account` crea su cuenta "negocio" y las asignaciones, entregas de cierre y traslados de sus ruteros usan esa cuenta (`fund_business_account_for`). Aportes y retiros se hacen con la sede elegida.
 - Para volver al capital general, la cuenta de la sede debe estar en cero.
+
+## KU-018 · Notificaciones por Telegram (etapa 6)
+
+- Migración `20261116000015_telegram.sql`: `notification_settings` (bot y horarios por negocio), `notification_channels` (grupo por sección y sede) y `notification_log` (historial de envíos).
+- `src/notify.js` arma los mensajes. Cada acción de la auditoría (`audit()`) puede generar un aviso, que se envía en segundo plano y nunca hace fallar la petición.
+- Secciones: cobros, créditos, capital y cajas, gastos, clientes, vehículos y resumen diario.
+- Un grupo de sede solo recibe los avisos de los ruteros de esa sede; un grupo de "todas las sedes" recibe todo.
+- Resúmenes: agenda de la mañana y resumen del cierre a la hora configurada (revisión cada 10 minutos, hora de Colombia), uno por sede y uno general.
+- Rutas: `GET/PUT/DELETE /notificaciones/bot`, `GET /notificaciones`, `POST /notificaciones/buscar-grupos`, `POST|PUT|DELETE /notificaciones/canales`, `POST /notificaciones/canales/:id/prueba`, `POST /notificaciones/resumen/manana|cierre`, `GET /mis-notificaciones`, `POST /mis-notificaciones/:id/unirme` (enlace personal de 24 horas).
+- `PUBLIC_APP_URL` (opcional): enlace "Abrir en KashUp" en cada aviso. Si no está, se usa el primer `CORS_ORIGIN` con https.

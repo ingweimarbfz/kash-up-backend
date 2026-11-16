@@ -1,5 +1,8 @@
 const supabase = require('./db')
 
+// Avisos por Telegram (KU-018): cada acción auditada puede generar un mensaje. Se carga tarde para evitar ciclos.
+const notifyAudit = (...a) => { try { require('./notify').onAudit(...a) } catch (e) { console.warn('[telegram]', e.message) } }
+
 // Registra una acción en la auditoría. Nunca rompe la petición si falla.
 const audit = async (req, action, entity, entityId = null, detail = null) => {
   try {
@@ -14,6 +17,7 @@ const audit = async (req, action, entity, entityId = null, detail = null) => {
   } catch (e) {
     console.warn('[auditoría]', e.message)
   }
+  notifyAudit(req, action, entity, entityId, detail)
 }
 
 module.exports = { audit }
