@@ -10,6 +10,7 @@ const express = require('express')
 const supabase = require('../db')
 const { currentOrg } = require('../tenant')
 const { h, fail, clean } = require('../http')
+const { bySite } = require('../site')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
 
@@ -21,16 +22,19 @@ const MOVE_LABELS = {
   desembolso: 'Desembolso de crédito', reverso_desembolso: 'Anulación de crédito', recaudo: 'Recaudo', ajuste: 'Ajuste', gasto: 'Gasto', reverso_gasto: 'Anulación de gasto', traslado: 'Traslado'
 }
 
-const businessAccount = async () => {
-  const { data: id, error } = await supabase.rpc('fund_business_account', { p_org: currentOrg() })
+// Cuenta de capital: la general o, si la sede elegida maneja capital aparte, la de esa sede.
+const businessAccount = async (siteId = null) => {
+  const { data: id, error } = siteId
+    ? await supabase.rpc('fund_site_account', { p_org: currentOrg(), p_site: siteId })
+    : await supabase.rpc('fund_business_account', { p_org: currentOrg() })
   if (error) throw error
   const [{ data: acc }, { data: s }] = await Promise.all([
-    supabase.from('fund_accounts').select('id, balance, capital').eq('id', id).single(),
+    supabase.from('fund_accounts').select('id, balance, capital, site_id, site:sites(id, name)').eq('id', id).single(),
     supabase.from('app_settings').select('min_reserve_pct').maybeSingle()
   ])
   const pct = Number(s?.min_reserve_pct ?? 10)
   const reserve = Math.round(Math.max(Number(acc.capital), 0) * pct / 100)
-  return { id: acc.id, balance: Number(acc.balance), capital: Number(acc.capital), reservePct: pct, reserve, available: Math.max(Number(acc.balance) - reserve, 0) }
+  return { id: acc.id, balance: Number(acc.balance), capital: Number(acc.capital), reservePct: pct, reserve, available: Math.max(Number(acc.balance) - reserve, 0), site: acc.site ? { id: acc.site.id, name: acc.site.name } : null }
 }
 
 // Saldo disponible para prestar de un prestamista (o del negocio si lenderId es null).
@@ -43,16 +47,16 @@ const availableFor = async (lenderId) => {
 const movementDTO = (m) => ({
   id: m.id, type: m.type, typeLabel: MOVE_LABELS[m.type], amount: Number(m.amount), balanceAfter: Number(m.balance_after), ref: m.ref, note: m.note,
   createdAt: m.created_at, creditId: m.credit_id, creditNumber: m.credit?.number ?? null, user: fullName(m.user),
-  account: m.account ? (m.account.kind === 'negocio' ? 'Negocio' : fullName(m.account.owner)) : null,
-  counterpart: m.counterpart ? (m.counterpart.kind === 'negocio' ? 'Negocio' : fullName(m.counterpart.owner)) : null
+  account: m.account ? (m.account.kind === 'negocio' ? (m.account.site ? `Capital ${m.account.site.name}` : 'Negocio') : fullName(m.account.owner)) : null,
+  counterpart: m.counterpart ? (m.counterpart.kind === 'negocio' ? (m.counterpart.site ? `Capital ${m.counterpart.site.name}` : 'Negocio') : fullName(m.counterpart.owner)) : null
 })
-const MOVE_SELECT = 'id, type, amount, balance_after, ref, note, created_at, credit_id, credit:credits(number), user:users!fund_movements_user_id_fkey(name, last_name), account:fund_accounts!fund_movements_account_id_fkey(kind, owner:users(name, last_name)), counterpart:fund_accounts!fund_movements_counterpart_account_id_fkey(kind, owner:users(name, last_name))'
+const MOVE_SELECT = 'id, type, amount, balance_after, ref, note, created_at, credit_id, credit:credits(number), user:users!fund_movements_user_id_fkey(name, last_name), account:fund_accounts!fund_movements_account_id_fkey(kind, owner:users(name, last_name), site:sites(name)), counterpart:fund_accounts!fund_movements_counterpart_account_id_fkey(kind, owner:users(name, last_name), site:sites(name))'
 
 // Resumen para el administrador: negocio + caja de cada prestamista.
 router.get('/capital', auth(ADMIN), h(async (req, res) => {
-  const biz = await businessAccount()
+  const biz = await businessAccount(req.siteId)
   const [{ data: lenders, error }, { data: accounts }, { data: moves }, { data: bal }] = await Promise.all([
-    supabase.from('users').select('id, name, last_name, active, avatar_url').eq('role', 'prestamista').order('name'),
+    bySite(req, supabase.from('users').select('id, name, last_name, active, avatar_url').eq('role', 'prestamista').order('name'), 'id'),
     supabase.from('fund_accounts').select('id, user_id, balance').eq('kind', 'prestamista'),
     supabase.from('fund_movements').select('account_id, type, amount').in('type', ['asignacion', 'devolucion_asignacion', 'desembolso', 'reverso_desembolso', 'recaudo']),
     supabase.from('credit_balances').select('lender_id, balance, overdue_amount').eq('status', 'activo')
@@ -74,12 +78,18 @@ router.get('/capital', auth(ADMIN), h(async (req, res) => {
       activeCredits: port.length
     }
   })
-  res.send({ business: biz, lenders: rows, totals: { lendersBalance: rows.reduce((s, r) => s + r.balance, 0), portfolio: rows.reduce((s, r) => s + r.portfolio, 0) } })
+  // Sedes con capital aparte (solo en la vista general).
+  let siteAccounts = []
+  if (!req.siteId) {
+    const { data: sa } = await supabase.from('fund_accounts').select('id, balance, capital, site:sites!inner(id, name, own_capital)').eq('kind', 'negocio').not('site_id', 'is', null)
+    siteAccounts = (sa || []).filter((a) => a.site.own_capital).map((a) => ({ id: a.id, siteId: a.site.id, siteName: a.site.name, balance: Number(a.balance), capital: Number(a.capital) }))
+  }
+  res.send({ business: biz, siteAccounts, lenders: rows, totals: { lendersBalance: rows.reduce((s, r) => s + r.balance, 0), portfolio: rows.reduce((s, r) => s + r.portfolio, 0) } })
 }))
 
 router.get('/capital/movimientos', auth(ADMIN), h(async (req, res) => {
   let q = supabase.from('fund_movements').select(MOVE_SELECT).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(Math.min(Number(req.query.limit) || 200, 500))
-  if (req.query.cuenta === 'negocio') q = q.eq('account_id', (await businessAccount()).id)
+  if (req.query.cuenta === 'negocio') q = q.eq('account_id', (await businessAccount(req.siteId)).id)
   else if (Number(req.query.cuenta)) {
     const { data: acc } = await supabase.from('fund_accounts').select('id').eq('user_id', Number(req.query.cuenta)).maybeSingle()
     q = q.eq('account_id', acc?.id ?? 0)
@@ -95,13 +105,13 @@ router.post('/capital/aportes', auth(ADMIN), h(async (req, res) => {
   const amount = Math.round(Number(b.amount))
   if (!['aporte', 'retiro'].includes(b.type)) return fail(res, 'Tipo inválido', 400)
   if (!(amount > 0)) return fail(res, 'Ingresa un valor mayor que cero', 400)
-  const biz = await businessAccount()
+  const biz = await businessAccount(req.siteId)
   const { data, error } = await supabase.from('fund_movements').insert({
     account_id: biz.id, type: b.type, amount: b.type === 'aporte' ? amount : -amount, note: clean(b.note), user_id: req.user.id
   }).select('id').single()
   if (error) return p0001(res, error)
   await audit(req, b.type === 'aporte' ? 'aporte_capital' : 'retiro_capital', 'capital', data.id, { amount })
-  res.status(201).send(await businessAccount())
+  res.status(201).send(await businessAccount(req.siteId))
 }))
 
 // Asignar dinero a un prestamista (action 'asignar') o quitárselo (action 'quitar').
@@ -127,7 +137,7 @@ router.put('/capital/reserva', auth(ADMIN), h(async (req, res) => {
   const { error } = await supabase.from('app_settings').update({ min_reserve_pct: pct }).eq('org_id', currentOrg())
   if (error) throw error
   await audit(req, 'editar', 'reserva_capital', currentOrg(), { pct })
-  res.send(await businessAccount())
+  res.send(await businessAccount(req.siteId))
 }))
 
 // Caja del prestamista que entra.

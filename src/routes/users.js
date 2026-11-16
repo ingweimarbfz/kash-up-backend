@@ -36,6 +36,7 @@ const activeAdmins = async (excludeId) => {
 router.get('/usuarios', auth(ADMIN), h(async (req, res) => {
   let q = supabase.from('users').select(USER_COLUMNS).order('name')
   if (ROLES.includes(req.query.rol)) q = q.eq('role', req.query.rol)
+  if (req.siteId) q = q.or(`site_id.eq.${req.siteId},role.eq.administrador`)
   const { data, error } = await q
   if (error) throw error
   res.send(data.map(toUserDTO))
@@ -53,6 +54,7 @@ router.post('/usuarios', auth(ADMIN), h(async (req, res) => {
     email: clean(b.email),
     phone: clean(b.phone),
     role: b.role,
+    site_id: Number(b.siteId) || null,
     password_hash: await bcrypt.hash(b.password, 10),
     active: b.active !== false
   }).select(USER_COLUMNS).single()
@@ -79,6 +81,7 @@ router.put('/usuarios/:id', auth(ADMIN), h(async (req, res) => {
     email: clean(b.email),
     phone: clean(b.phone),
     role: b.role,
+    site_id: Number(b.siteId) || null,
     active: b.active !== false
   }
   if (b.password) patch.password_hash = await bcrypt.hash(b.password, 10)

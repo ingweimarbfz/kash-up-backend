@@ -3,6 +3,7 @@ const supabase = require('../db')
 const { currentOrg } = require('../tenant')
 const { availableFor } = require('./funds')
 const { h, fail, clean, PHONE_RE, todayBogota } = require('../http')
+const { bySite } = require('../site')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
 const { buildSchedule, suggestFirstDue, intervalDays } = require('../lib/schedule')
@@ -238,6 +239,7 @@ const reqDTO = (r, extra = {}) => ({
 router.get('/solicitudes-credito', auth(STAFF), h(async (req, res) => {
   let q = supabase.from('credit_requests').select(REQ_SELECT).order('id', { ascending: false }).limit(300)
   if (req.user.role === 'prestamista') q = q.eq('lender_id', req.user.id)
+  else q = bySite(req, q)
   if (req.query.estado) q = q.eq('status', req.query.estado)
   const { data, error } = await q
   if (error) throw error
@@ -302,6 +304,7 @@ router.get('/creditos', auth(STAFF), h(async (req, res) => {
   let q = supabase.from('credits').select(LIST_SELECT).order('number', { ascending: false }).limit(1000)
   if (req.user.role === 'prestamista') q = q.eq('lender_id', req.user.id)
   else if (Number(req.query.prestamista)) q = q.eq('lender_id', Number(req.query.prestamista))
+  else q = bySite(req, q)
   if (req.query.estado) q = q.eq('status', req.query.estado)
   if (req.query.tipo) q = q.eq('kind', req.query.tipo)
   if (Number(req.query.cliente)) q = q.eq('customer_id', Number(req.query.cliente))

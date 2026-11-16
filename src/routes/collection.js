@@ -9,6 +9,7 @@ const express = require('express')
 const supabase = require('../db')
 const { currentOrg } = require('../tenant')
 const { h, fail, clean, todayBogota, imageError } = require('../http')
+const { bySite } = require('../site')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
 
@@ -110,7 +111,7 @@ router.put('/ruta/orden', auth(STAFF), h(async (req, res) => {
 // Resumen de todas las rutas (administrador).
 router.get('/rutas', auth(ADMIN), h(async (req, res) => {
   const day = dayParam(req.query.fecha)
-  const { data: lenders } = await supabase.from('users').select('id, name, last_name').eq('role', 'prestamista').eq('active', true).order('name')
+  const { data: lenders } = await bySite(req, supabase.from('users').select('id, name, last_name').eq('role', 'prestamista').eq('active', true).order('name'), 'id')
   const { data: closures } = await supabase.from('route_closures').select('lender_id, difference, counted_cash').eq('day', day)
   const rows = await Promise.all((lenders || []).map(async (l) => {
     const [route, { data: s }] = await Promise.all([buildRoute(l.id, day), supabase.rpc('day_summary', { p_org: currentOrg(), p_lender: l.id, p_day: day })])
@@ -160,7 +161,7 @@ router.get('/morosos', auth(STAFF), h(async (req, res) => {
   const today = todayBogota()
   let q = supabase.from('credits').select('id, number, kind, installment_amount, customer:customers(id, name, last_name, identification, phone, address, neighborhood, photo_thumb, lat, lng), lender:users!credits_lender_id_fkey(id, name, last_name)').eq('status', 'activo')
   const lender = lenderScope(req)
-  if (lender) q = q.eq('lender_id', lender)
+  q = lender ? q.eq('lender_id', lender) : bySite(req, q)
   const { data: credits, error } = await q
   if (error) throw error
   const ids = credits.map((c) => c.id)
@@ -202,7 +203,7 @@ router.get('/mapa', auth(STAFF), h(async (req, res) => {
   const today = todayBogota()
   let q = supabase.from('customers').select('id, name, last_name, identification, phone, address, neighborhood, lat, lng, photo_thumb, lender:users!customers_lender_id_fkey(id, name, last_name)').not('lat', 'is', null).not('lng', 'is', null).neq('status', 'inactivo')
   const lender = lenderScope(req)
-  if (lender) q = q.eq('lender_id', lender)
+  q = lender ? q.eq('lender_id', lender) : bySite(req, q)
   const { data: customers, error } = await q
   if (error) throw error
   const ids = customers.map((c) => c.id)
@@ -241,6 +242,7 @@ router.get('/gastos', auth(STAFF), h(async (req, res) => {
   if (req.user.role === 'prestamista') q = q.eq('lender_id', req.user.id)
   else if (req.query.prestamista === 'negocio') q = q.is('lender_id', null)
   else if (Number(req.query.prestamista)) q = q.eq('lender_id', Number(req.query.prestamista))
+  else q = bySite(req, q)
   if (ISO.test(req.query.desde || '')) q = q.gte('spent_on', req.query.desde)
   if (ISO.test(req.query.hasta || '')) q = q.lte('spent_on', req.query.hasta)
   if (EXPENSE_LABELS[req.query.categoria]) q = q.eq('category', req.query.categoria)
@@ -336,7 +338,7 @@ router.post('/cierres', auth(STAFF), h(async (req, res) => {
 router.get('/cierres', auth(STAFF), h(async (req, res) => {
   let q = supabase.from('route_closures').select(CL_SELECT).order('day', { ascending: false }).order('id', { ascending: false }).limit(200)
   const lender = lenderScope(req)
-  if (lender) q = q.eq('lender_id', lender)
+  q = lender ? q.eq('lender_id', lender) : bySite(req, q)
   if (ISO.test(req.query.desde || '')) q = q.gte('day', req.query.desde)
   if (ISO.test(req.query.hasta || '')) q = q.lte('day', req.query.hasta)
   const { data, error } = await q

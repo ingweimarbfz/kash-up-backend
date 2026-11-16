@@ -8,6 +8,7 @@ const express = require('express')
 const supabase = require('../db')
 const { currentOrg } = require('../tenant')
 const { h, fail, clean, todayBogota, imageError, PHONE_RE } = require('../http')
+const { bySite } = require('../site')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
 
@@ -80,7 +81,7 @@ const findVehicle = async (req, id) => {
 
 router.get('/vehiculos', auth(STAFF), h(async (req, res) => {
   let q = supabase.from('vehicles').select(SELECT).order('code')
-  if (req.user.role === 'prestamista') q = q.eq('collector_id', req.user.id)
+  q = req.user.role === 'prestamista' ? q.eq('collector_id', req.user.id) : bySite(req, q, 'collector_id')
   const { data, error } = await q
   if (error) throw error
   const today = todayBogota()
