@@ -63,8 +63,21 @@ router.get('/reportes/recaudo', auth(ADMIN), h(async (req, res) => {
     return { lender: lenderName(all, id), count: rows.length, amount: sum(rows, (p) => n(p.amount)), cash: sum(rows.filter((p) => p.method === 'efectivo'), (p) => n(p.amount)), capital: sum(rows.filter((p) => p.kind === 'abono_capital'), (p) => n(p.amount)) }
   }).sort((a, b) => b.amount - a.amount)
   const amount = sum(pays, (p) => n(p.amount))
+  // Detalle para el reporte en PDF (?detalle=1): cada pago con cliente y crédito.
+  let rows
+  if (req.query.detalle === '1') {
+    const det = []
+    for (let i = 0; i < ids.length && i < 2000; i += 500) {
+      const { data } = await supabase.from('payments').select('id, number, kind, amount, method, paid_on, lender_id, credit:credits(number), customer:customers(name, last_name, identification)').in('id', ids.slice(i, i + 500))
+      det.push(...(data || []))
+    }
+    rows = det.sort((a, b) => (a.paid_on === b.paid_on ? a.number - b.number : a.paid_on < b.paid_on ? -1 : 1)).map((p) => ({
+      id: p.id, number: `RC-${String(p.number).padStart(4, '0')}`, date: p.paid_on, customer: fullName(p.customer), identification: p.customer?.identification,
+      credit: p.credit?.number, lender: lenderName(all, p.lender_id), method: p.method, kind: p.kind, amount: n(p.amount)
+    }))
+  }
   res.send({
-    desde, hasta, series, byLender,
+    desde, hasta, series, byLender, rows,
     totals: {
       count: pays.length, amount, cash: sum(pays.filter((p) => p.method === 'efectivo'), (p) => n(p.amount)), other: sum(pays.filter((p) => p.method !== 'efectivo'), (p) => n(p.amount)),
       abonos: sum(pays.filter((p) => p.kind === 'abono_capital'), (p) => n(p.amount)), interest: Math.round(interest), capital: Math.round(amount - interest),
@@ -127,7 +140,20 @@ const summarize = (rows) => {
 
 router.get('/reportes/cartera', auth(ADMIN), h(async (req, res) => {
   const [rows, all] = await Promise.all([portfolio(Number(req.query.prestamista) || req.siteLenders), lenders()])
+  // Detalle para el PDF: créditos atrasados, del más atrasado al menos.
+  let late
+  if (req.query.detalle === '1') {
+    const lr = rows.filter((r) => r.daysLate > 0).sort((a, b) => b.daysLate - a.daysLate).slice(0, 1000)
+    const cids = lr.map((r) => r.credit_id)
+    const info = []
+    for (let i = 0; i < cids.length; i += 500) {
+      const { data } = await supabase.from('credits').select('id, number, customer:customers(name, last_name, phone, neighborhood)').in('id', cids.slice(i, i + 500))
+      info.push(...(data || []))
+    }
+    late = lr.map((r) => { const c = info.find((x) => x.id === r.credit_id); return { credit: c?.number, customer: fullName(c?.customer), phone: c?.customer?.phone, neighborhood: c?.customer?.neighborhood, lender: lenderName(all, r.lender_id), daysLate: r.daysLate, overdueCount: r.overdue_count, overdue: n(r.overdue_amount), balance: n(r.balance) } })
+  }
   res.send({
+    late,
     totals: summarize(rows),
     tiers: TIERS.map(([k]) => { const r = rows.filter((x) => x.tier === k); return { key: k, credits: r.length, balance: sum(r, (x) => n(x.balance)), overdue: sum(r, (x) => n(x.overdue_amount)) } }),
     byLender: [...new Set(rows.map((r) => r.lender_id))].map((id) => ({ lender: lenderName(all, id), ...summarize(rows.filter((r) => r.lender_id === id)) })).sort((a, b) => b.balance - a.balance)
