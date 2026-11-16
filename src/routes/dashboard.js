@@ -21,17 +21,24 @@ const series = async (lenderId) => {
   const months = lastMonths()
   const from = `${months[0].key}-01`
   let cq = supabase.from('credits').select('principal, disbursement_date').neq('status', 'anulado').gte('disbursement_date', from)
-  let iq = supabase.from('installments').select('paid_amount, paid_at, credit:credits!inner(lender_id)').gt('paid_amount', 0).gte('paid_at', from)
-  if (lenderId) { cq = cq.eq('lender_id', lenderId); iq = iq.eq('credit.lender_id', lenderId) }
+  let iq = supabase.from('payments').select('amount, paid_on').eq('status', 'aplicado').neq('kind', 'renovacion').gte('paid_on', from)
+  if (lenderId) { cq = cq.eq('lender_id', lenderId); iq = iq.eq('lender_id', lenderId) }
   const [{ data: credits }, { data: paid }] = await Promise.all([cq, iq])
   return months.map(({ key, mes }) => ({
     mes,
     colocado: (credits || []).filter((c) => c.disbursement_date.startsWith(key)).reduce((s, c) => s + Number(c.principal), 0),
-    recaudado: (paid || []).filter((p) => String(p.paid_at).startsWith(key)).reduce((s, p) => s + Number(p.paid_amount), 0)
+    recaudado: (paid || []).filter((p) => String(p.paid_on).startsWith(key)).reduce((s, p) => s + Number(p.amount), 0)
   }))
 }
 
 const sumBy = (rows, k) => rows.reduce((s, r) => s + Number(r[k] || 0), 0)
+// Recaudo del día (sin los cierres por renovación, que no son efectivo).
+const collectedToday = async (lenderId) => {
+  let q = supabase.from('payments').select('amount').eq('status', 'aplicado').neq('kind', 'renovacion').eq('paid_on', todayBogota())
+  if (lenderId) q = q.eq('lender_id', lenderId)
+  const { data } = await q
+  return sumBy(data || [], 'amount')
+}
 
 router.get('/dashboard', auth(), h(async (req, res) => {
   const role = req.user.role
@@ -44,13 +51,14 @@ router.get('/dashboard', auth(), h(async (req, res) => {
       series(),
       supabase.from('fund_accounts').select('kind, balance')
     ])
+    const recaudoHoy = await collectedToday()
     const count = (r) => (users || []).filter((u) => u.role === r && u.active).length
     const enMora = sumBy(bal || [], 'overdue_amount')
     const cartera = sumBy(bal || [], 'balance')
     return res.send({
       role,
       kpis: {
-        carteraActiva: cartera, capitalPorCobrar: sumBy(bal || [], 'capital_balance'), recaudoHoy: 0, enMora,
+        carteraActiva: cartera, capitalPorCobrar: sumBy(bal || [], 'capital_balance'), recaudoHoy, enMora,
         creditosActivos: (bal || []).length, clientesEnMora: new Set((bal || []).filter((b) => Number(b.overdue_amount) > 0).map((b) => b.customer_id)).size,
         prestamistas: count('prestamista'), clientes: count('cliente'),
         saldoNegocio: sumBy((funds || []).filter((f) => f.kind === 'negocio'), 'balance'),
@@ -63,16 +71,17 @@ router.get('/dashboard', auth(), h(async (req, res) => {
 
   if (role === 'prestamista') {
     const [{ data: due }, { data: bal }, s, { data: caja }] = await Promise.all([
-      supabase.from('installments').select('amount, paid_amount, credit:credits!inner(lender_id, customer_id, status)').in('status', ['pendiente', 'parcial']).lte('due_date', today).eq('credit.lender_id', req.user.id).eq('credit.status', 'activo'),
+      supabase.from('installments').select('amount, paid_amount, waived, credit:credits!inner(lender_id, customer_id, status)').in('status', ['pendiente', 'parcial']).lte('due_date', today).eq('credit.lender_id', req.user.id).eq('credit.status', 'activo'),
       supabase.from('credit_balances').select('customer_id, overdue_amount').eq('status', 'activo').eq('lender_id', req.user.id),
       series(req.user.id),
       supabase.from('fund_accounts').select('balance').eq('user_id', req.user.id).maybeSingle()
     ])
+    const cobradoHoy = await collectedToday(req.user.id)
     return res.send({
       role,
       kpis: {
-        porCobrarHoy: (due || []).reduce((t, i) => t + Number(i.amount) - Number(i.paid_amount), 0),
-        cobradoHoy: 0,
+        porCobrarHoy: (due || []).reduce((t, i) => t + Number(i.amount) - Number(i.paid_amount) - Number(i.waived || 0), 0),
+        cobradoHoy,
         miCaja: Number(caja?.balance ?? 0),
         visitasPendientes: new Set((due || []).map((i) => i.credit.customer_id)).size,
         clientesEnMora: new Set((bal || []).filter((b) => Number(b.overdue_amount) > 0).map((b) => b.customer_id)).size
@@ -86,7 +95,7 @@ router.get('/dashboard', auth(), h(async (req, res) => {
   if (!customer) return res.send({ role, kpis: { saldoPendiente: 0, proximaCuota: null, cuotasPagadas: 0, creditosActivos: 0 }, creditos: [] })
   const [{ data: bal }, { data: next }] = await Promise.all([
     supabase.from('credit_balances').select('credit_id, balance, paid_count, overdue_amount').eq('customer_id', customer.id).eq('status', 'activo'),
-    supabase.from('installments').select('due_date, amount, paid_amount, credit:credits!inner(customer_id, status)').eq('credit.customer_id', customer.id).eq('credit.status', 'activo').in('status', ['pendiente', 'parcial']).order('due_date').limit(1)
+    supabase.from('installments').select('due_date, amount, paid_amount, waived, credit:credits!inner(customer_id, status)').eq('credit.customer_id', customer.id).eq('credit.status', 'activo').in('status', ['pendiente', 'parcial']).order('due_date').limit(1)
   ])
   const n = next?.[0]
   return res.send({
@@ -94,7 +103,7 @@ router.get('/dashboard', auth(), h(async (req, res) => {
     kpis: {
       saldoPendiente: sumBy(bal || [], 'balance'),
       enMora: sumBy(bal || [], 'overdue_amount'),
-      proximaCuota: n ? { valor: Number(n.amount) - Number(n.paid_amount), fecha: n.due_date } : null,
+      proximaCuota: n ? { valor: Number(n.amount) - Number(n.paid_amount) - Number(n.waived || 0), fecha: n.due_date } : null,
       cuotasPagadas: sumBy(bal || [], 'paid_count'),
       creditosActivos: (bal || []).length
     }

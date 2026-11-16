@@ -74,6 +74,22 @@ aportado, configurable). Las reglas están en la base de datos (`apply_fund_move
 | PUT | `/capital/reserva` | administrador |
 | GET | `/mi-caja` | prestamista |
 
+## Pagos, abono a capital y renovación (etapa 3)
+
+| Método | Ruta | Rol |
+|---|---|---|
+| POST | `/creditos/:id/pagos` (`kind`: cuota o abono_capital) | administrador, prestamista (sus créditos) |
+| GET | `/pagos?desde=&hasta=&prestamista=&cliente=`, `/pagos/:id` (recibo) | administrador, prestamista |
+| POST | `/pagos/:id/anular` (solo el último pago del crédito) | administrador |
+| GET | `/creditos/:id/renovacion` | administrador, prestamista |
+| GET | `/mis-pagos` | cliente |
+
+- **Pago de cuota:** se aplica a las cuotas pendientes desde la más antigua. El efectivo entra a la caja del prestamista.
+- **Abono a capital:** exige estar al día; paga el capital de las últimas cuotas hacia atrás y condona su interés (el plazo se acorta).
+- **Renovación:** solo si el cliente está al día. El saldo actual del crédito se descuenta del nuevo y se entrega la diferencia;
+  el crédito anterior queda `renovado`. Anular el crédito nuevo reactiva el anterior.
+- **Un prestamista por cliente:** si el cliente ya tiene créditos con un prestamista, otro prestamista no le puede prestar; solo el administrador.
+
 ## Inventario por bodegas
 
 Cada negocio tiene una **bodega principal** (en su sede principal) y puede crear sedes y varias bodegas por sede.
