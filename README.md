@@ -101,6 +101,12 @@ aportado, configurable). Las reglas están en la base de datos (`apply_fund_move
 - `GET /cierres/resumen`, `POST /cierres`, `GET /cierres`, `DELETE /cierres/:id` (reabrir, administrador): `close_day` guarda el cuadre (esperado = saldo de la caja, contado, diferencia) y puede entregar efectivo al negocio. Con la jornada cerrada el prestamista no registra pagos ni gastos de ese día (trigger `check_day_open`).
 - Los pagos por transferencia u otro medio entran a la cuenta del negocio; en efectivo, a la caja de quien cobra.
 
+## Recibo de servicios y traslado de ruta
+
+- El cliente nuevo exige la foto de un recibo de servicios (`utilityBillUrl`) para comprobar la dirección; sin recibo no se le puede prestar. `PUT /clientes/:id/recibo` lo sube a clientes antiguos.
+- `POST /clientes/:id/traslado {lenderId, address?, neighborhood?, city?, lat?, lng?, utilityBillUrl?, note}`: el cliente pasa a la ruta de otro prestamista (y a su nueva dirección, con recibo nuevo). Sus créditos activos pasan a ese prestamista (`transfer_customer`), que desde ahí los cobra. Queda en `customer_transfers` y en la ficha del cliente. Cambiar el prestamista desde "Editar" hace lo mismo.
+- Un prestamista solo presta a clientes de su ruta y sin créditos activos con otro prestamista (`check_credit_lender`).
+
 ## Inventario por bodegas
 
 Cada negocio tiene una **bodega principal** (en su sede principal) y puede crear sedes y varias bodegas por sede.
