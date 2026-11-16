@@ -25,6 +25,12 @@ const prepare = async (req, b) => {
   const { data: customer } = await cq.maybeSingle()
   if (!customer) throw new Bad('Selecciona un cliente válido')
   if (customer.status !== 'activo') throw new Bad(`El cliente está ${customer.status}; no se le pueden otorgar créditos`)
+  // Exclusividad: si el cliente ya tiene créditos con otro prestamista, solo el administrador le presta.
+  if (req.user.role === 'prestamista') {
+    const { data: other } = await supabase.from('credits').select('lender:users!credits_lender_id_fkey(name, last_name)')
+      .eq('customer_id', customer.id).neq('status', 'anulado').neq('lender_id', req.user.id).not('lender_id', 'is', null).limit(1)
+    if (other?.length) throw new Bad(`Este cliente ya tiene créditos con ${fullName(other[0].lender)}. Solo el administrador puede otorgarle uno con otro prestamista`)
+  }
 
   // Productos
   let items = []
@@ -102,19 +108,38 @@ const withBad = (fn) => h(async (req, res) => {
   try { await fn(req, res) } catch (e) { if (e.status === 400) return fail(res, e.message, 400); throw e }
 })
 
+// Renovación: el crédito anterior debe estar activo, al día y ser del mismo cliente. Se descuenta su saldo.
+const renewalInfo = async (req, oldId) => {
+  let q = supabase.from('credits').select('id, number, customer_id, lender_id, status').eq('id', Number(oldId))
+  if (req.user.role === 'prestamista') q = q.eq('lender_id', req.user.id)
+  const { data: old } = await q.maybeSingle()
+  if (!old) throw new Bad('El crédito a renovar no existe')
+  const { data: b } = await supabase.from('credit_balances').select('balance, overdue_amount, overdue_count').eq('credit_id', old.id).single()
+  const info = { creditId: old.id, number: old.number, customerId: old.customer_id, lenderId: old.lender_id, payoff: Number(b.balance), overdue: Number(b.overdue_amount), overdueCount: b.overdue_count }
+  info.canRenew = old.status === 'activo' && b.overdue_count === 0
+  info.reason = old.status !== 'activo' ? `El crédito #${old.number} está ${old.status}` : b.overdue_count ? `Debe ponerse al día primero: tiene ${b.overdue_count} cuota(s) vencida(s) por ${Number(b.overdue_amount).toLocaleString('es-CO')}` : null
+  return info
+}
+
 // Quién presta: el prestamista que crea, o el elegido / asignado al cliente.
 const resolveLender = (req, b, customer) => (req.user.role === 'prestamista' ? req.user.id : (Number(b.lenderId) || customer.lender_id || null))
 
 router.post('/creditos/simular', auth(STAFF), withBad(async (req, res) => {
   const b = req.body || {}
   const p = await prepare(req, b)
+  let renewal = null
+  if (Number(b.renewFromId)) {
+    renewal = await renewalInfo(req, b.renewFromId)
+    renewal.net = p.schedule.disbursedAmount - renewal.payoff
+  }
+  const cashOut = renewal ? Math.max(renewal.net, 0) : p.schedule.disbursedAmount
   // Dinero disponible en la caja que presta (solo crédito en efectivo).
   let funds = null
   if (b.kind === 'efectivo') {
     funds = await availableFor(resolveLender(req, b, p.customer))
-    funds.enough = funds.available >= p.schedule.disbursedAmount
+    funds.enough = funds.available >= cashOut
   }
-  res.send({ funds, productsTotal: p.productsTotal, discountAmount: p.discountAmount, discountName: p.discount?.name ?? null, downPayment: p.downPayment, rate: p.rateInfo, ...p.schedule })
+  res.send({ funds, renewal, productsTotal: p.productsTotal, discountAmount: p.discountAmount, discountName: p.discount?.name ?? null, downPayment: p.downPayment, rate: p.rateInfo, ...p.schedule })
 }))
 
 router.post('/creditos', auth(STAFF), withBad(async (req, res) => {
@@ -132,21 +157,30 @@ router.post('/creditos', auth(STAFF), withBad(async (req, res) => {
     if (!l) return fail(res, 'El prestamista seleccionado no existe o está inactivo', 400)
   }
   const s = p.schedule
-  const { data: id, error } = await supabase.rpc('create_credit', {
+  let renewal = null
+  if (Number(b.renewFromId)) {
+    if (b.kind !== 'efectivo') return fail(res, 'La renovación se hace como crédito en efectivo', 400)
+    renewal = await renewalInfo(req, b.renewFromId)
+    if (renewal.customerId !== p.customer.id) return fail(res, 'La renovación debe ser para el mismo cliente', 400)
+    if (!renewal.canRenew) return fail(res, `No se puede renovar. ${renewal.reason}`, 400)
+    if (s.disbursedAmount - renewal.payoff <= 0) return fail(res, `El nuevo crédito debe entregar más que el saldo actual (${renewal.payoff.toLocaleString('es-CO')})`, 400)
+  }
+  const { data: id, error } = await supabase.rpc(renewal ? 'renew_credit' : 'create_credit', {
     p: {
+      ...(renewal ? { renewed_from_id: renewal.creditId, payoff_amount: renewal.payoff } : {}),
       org_id: currentOrg(), customer_id: p.customer.id, lender_id: lenderId, kind: b.kind,
       products_total: p.productsTotal, discount_id: p.discount?.id ?? null, discount_name: p.discount?.name ?? null, discount_amount: p.discountAmount, down_payment: p.downPayment,
       principal: s.principal, interest_rate_id: p.rateInfo.id, interest_name: p.rateInfo.name, interest_method: s.method, rate: s.rate, rate_basis: s.rateBasis,
       frequency: s.frequency, interval_days: s.intervalDays, installments_count: s.count, skip_sundays: Boolean(b.skipSundays),
       disbursement_date: p.disbursementDate, first_due_date: s.firstDueDate, last_due_date: s.lastDueDate,
-      total_interest: s.totalInterest, total_amount: s.totalAmount, installment_amount: s.installmentAmount, disbursed_amount: s.disbursedAmount,
+      total_interest: s.totalInterest, total_amount: s.totalAmount, installment_amount: s.installmentAmount, disbursed_amount: renewal ? s.disbursedAmount - renewal.payoff : s.disbursedAmount,
       notes: clean(b.notes), created_by: req.user.id,
       references: refs, items: p.items, warehouse_id: p.warehouse?.id ?? null,
       installments: s.installments.map((i) => ({ number: i.number, due_date: i.dueDate, capital: i.capital, interest: i.interest, amount: i.amount }))
     }
   })
   if (error) return error.code === 'P0001' ? fail(res, error.message, 400) : fail(res, error)
-  await audit(req, 'crear', 'credito', id, { kind: b.kind, principal: s.principal, customer: p.customer.id })
+  await audit(req, renewal ? 'renovar' : 'crear', 'credito', id, { kind: b.kind, principal: s.principal, customer: p.customer.id, renewedFrom: renewal?.number })
   res.status(201).send(await detail(req, id))
 }))
 
@@ -190,13 +224,17 @@ const detail = async (req, id) => {
   if (req.user.role === 'prestamista') q = q.eq('lender_id', req.user.id)
   const { data: c } = await q.maybeSingle()
   if (!c) return null
-  const [{ data: inst }, { data: items }, { data: refs }, bal] = await Promise.all([
-    supabase.from('installments').select('id, number, due_date, capital, interest, amount, paid_amount, paid_at, status').eq('credit_id', id).order('number'),
+  const [{ data: inst }, { data: items }, { data: refs }, bal, { data: pays }, { data: links }] = await Promise.all([
+    supabase.from('installments').select('id, number, due_date, capital, interest, amount, paid_amount, waived, paid_at, status').eq('credit_id', id).order('number'),
     supabase.from('credit_items').select('product_id, product_name, quantity, unit_price, subtotal').eq('credit_id', id),
     supabase.from('credit_references').select('name, phone, relationship, address').eq('credit_id', id),
-    balancesFor([id])
+    balancesFor([id]),
+    supabase.from('payments').select('id, number, kind, amount, method, reference, paid_on, note, status, void_reason, created_at, user:users!payments_user_id_fkey(name, last_name)').eq('credit_id', id).order('id', { ascending: false }),
+    supabase.from('credits').select('id, number, status, renewed_from_id').or(`id.eq.${c.renewed_from_id || 0},renewed_from_id.eq.${id}`)
   ])
   const today = todayBogota()
+  const from = (links || []).find((k) => k.id === c.renewed_from_id)
+  const renewedBy = (links || []).find((k) => k.renewed_from_id === id && k.status !== 'anulado')
   return {
     ...listDTO(c, bal[id]),
     customer: { ...listDTO(c, bal[id]).customer, docType: c.customer.doc_type, address: c.customer.address, neighborhood: c.customer.neighborhood },
@@ -206,9 +244,16 @@ const detail = async (req, id) => {
     createdBy: fullName(c.creator), warehouse: c.warehouse ? { id: c.warehouse.id, name: c.warehouse.name } : null, capitalBalance: Number(bal[id]?.capital_balance ?? 0),
     items: (items || []).map((i) => ({ productId: i.product_id, name: i.product_name, quantity: i.quantity, unitPrice: Number(i.unit_price), subtotal: Number(i.subtotal) })),
     references: refs || [],
+    renewedFrom: from ? { id: from.id, number: from.number } : null, payoffAmount: Number(c.payoff_amount || 0),
+    renewedBy: renewedBy ? { id: renewedBy.id, number: renewedBy.number } : null,
+    waivedAmount: Number(bal[id]?.waived_amount ?? 0),
+    payments: (pays || []).map((p) => ({
+      id: p.id, number: p.number, kind: p.kind, amount: Number(p.amount), method: p.method, reference: p.reference, paidOn: p.paid_on, note: p.note,
+      status: p.status, voidReason: p.void_reason, createdAt: p.created_at, user: fullName(p.user)
+    })),
     installments: (inst || []).map((i) => ({
       id: i.id, number: i.number, dueDate: i.due_date, capital: Number(i.capital), interest: Number(i.interest), amount: Number(i.amount),
-      paidAmount: Number(i.paid_amount), paidAt: i.paid_at, status: i.status,
+      paidAmount: Number(i.paid_amount), waived: Number(i.waived || 0), paidAt: i.paid_at, status: i.status,
       overdue: ['pendiente', 'parcial'].includes(i.status) && i.due_date < today
     }))
   }
@@ -219,6 +264,8 @@ router.get('/creditos/:id', auth(STAFF), h(async (req, res) => {
   if (!d) return fail(res, 'Crédito no encontrado', 404)
   res.send(d)
 }))
+
+router.get('/creditos/:id/renovacion', auth(STAFF), withBad(async (req, res) => res.send(await renewalInfo(req, req.params.id))))
 
 router.post('/creditos/:id/anular', auth(ADMIN), h(async (req, res) => {
   const reason = clean(req.body?.reason)
