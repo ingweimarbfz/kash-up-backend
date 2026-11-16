@@ -183,3 +183,9 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 - `src/promo.js`: una promoción aplica según rango de fechas y horas, franja horaria diaria y días de la semana (hora de Colombia). Si varias aplican, gana el precio más bajo.
 - `GET /inventario/productos` trae `promo` y `finalPrice`; `GET /inventario/productos/:id` es la ficha completa (galería, existencias por bodega, próximas promociones).
 - `GET|POST|PUT|DELETE /promociones`. Al crear un crédito de producto el precio base es el de la promoción vigente y queda guardada en el crédito.
+
+## KU-021 · Usuario de conductor
+
+- Migración `20261116000017_usuario_conductor.sql`: rol `conductor` y `drivers.user_id`.
+- `POST /conductores/:id/acceso` crea o actualiza el usuario del conductor; si su documento es de un prestamista, lo enlaza a ese usuario. `DELETE` lo quita.
+- El conductor solo ve `GET /vehiculos` y `GET /vehiculos/:id` de los vehículos que conduce (sin registrar nada). El prestamista ve los que cobra y los que conduce.

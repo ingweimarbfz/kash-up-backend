@@ -101,7 +101,7 @@ router.get('/pagos', auth(STAFF), h(async (req, res) => {
   })
 }))
 
-router.get('/pagos/:id', auth(), h(async (req, res) => {
+router.get('/pagos/:id', auth(['administrador', 'prestamista', 'cliente']), h(async (req, res) => {
   const r = await receipt(Number(req.params.id))
   if (!r) return fail(res, 'Pago no encontrado', 404)
   if (req.user.role === 'prestamista' && r.lender?.id !== req.user.id) return fail(res, 'Pago no encontrado', 404)

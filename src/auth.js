@@ -9,10 +9,12 @@ const { loadSite } = require('./site')
 // · administrador: dueño u operador del negocio; ve y configura todo.
 // · prestamista: cobrador/vendedor en campo; ve su ruta, sus clientes y sus cobros.
 // · cliente: deudor; consulta sus créditos, cuotas y pagos.
-const ROLES = ['administrador', 'prestamista', 'cliente']
-const ROLE_LABELS = { administrador: 'Administrador', prestamista: 'Prestamista', cliente: 'Cliente' }
+// · conductor: maneja un vehículo de la flota; solo consulta el reporte de su vehículo (KU-021).
+const ROLES = ['administrador', 'prestamista', 'cliente', 'conductor']
+const ROLE_LABELS = { administrador: 'Administrador', prestamista: 'Prestamista', cliente: 'Cliente', conductor: 'Conductor' }
 const ADMIN = ['administrador']
 const STAFF = ['administrador', 'prestamista']
+const FLEET = ['administrador', 'prestamista', 'conductor']
 const ALL = ROLES
 
 const USER_COLUMNS = 'id, org_id, identification, name, last_name, username, email, phone, role, avatar_url, active, last_login_at, created_at, site_id, site:sites(id, name, city)'
@@ -65,4 +67,4 @@ const auth = (roles = ALL) => async (req, res, next) => {
   }
 }
 
-module.exports = { ROLES, ROLE_LABELS, ADMIN, STAFF, ALL, USER_COLUMNS, toUserDTO, signToken, auth }
+module.exports = { ROLES, ROLE_LABELS, ADMIN, STAFF, FLEET, ALL, USER_COLUMNS, toUserDTO, signToken, auth }

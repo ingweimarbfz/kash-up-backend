@@ -9,7 +9,8 @@ const supabase = require('../db')
 const { currentOrg } = require('../tenant')
 const { h, fail, clean, todayBogota, imageError, PHONE_RE } = require('../http')
 const { bySite } = require('../site')
-const { auth, ADMIN, STAFF } = require('../auth')
+const bcrypt = require('bcryptjs')
+const { auth, ADMIN, STAFF, FLEET } = require('../auth')
 const { audit } = require('../audit')
 
 const router = express.Router()
@@ -27,7 +28,7 @@ const DOCS = [['soat_expires', 'SOAT'], ['tecno_expires', 'Técnico-mecánica'],
 
 const DRIVER_COLS = 'id, name, last_name, identification, phone, license_number, license_category, license_expires, active'
 const SELECT = `*, collector:users!vehicles_collector_id_fkey(id, name, last_name, phone), driver:drivers(${DRIVER_COLS})`
-const driverDTO = (d) => (d ? { id: d.id, fullName: fullName(d), identification: d.identification, phone: d.phone, licenseNumber: d.license_number, licenseCategory: d.license_category, licenseExpires: d.license_expires, active: d.active } : null)
+const driverDTO = (d) => (d ? { id: d.id, fullName: fullName(d), identification: d.identification, phone: d.phone, licenseNumber: d.license_number, licenseCategory: d.license_category, licenseExpires: d.license_expires, active: d.active, userId: d.user_id ?? null } : null)
 
 // Alertas: documentos vencidos o por vencer (30 días) y cambio de aceite.
 const alertsOf = (v, lastOil, today) => {
@@ -71,17 +72,22 @@ const lastOilKm = async (ids) => {
   return out
 }
 
-// El prestamista solo ve y registra sobre el vehículo con el que cobra.
+// Vehículos que ve cada rol: el prestamista, los que cobra o conduce; el conductor, los que conduce (KU-021).
+const myDrivers = async (userId) => ((await supabase.from('drivers').select('id').eq('user_id', userId)).data || []).map((d) => d.id)
+const ownVehicles = async (req, q) => {
+  if (req.user.role === 'administrador') return q
+  const drivers = await myDrivers(req.user.id)
+  if (req.user.role === 'conductor') return q.in('driver_id', drivers.length ? drivers : [0])
+  return drivers.length ? q.or(`collector_id.eq.${req.user.id},driver_id.in.(${drivers.join(',')})`) : q.eq('collector_id', req.user.id)
+}
 const findVehicle = async (req, id) => {
-  let q = supabase.from('vehicles').select(SELECT).eq('id', Number(id))
-  if (req.user.role === 'prestamista') q = q.eq('collector_id', req.user.id)
-  const { data } = await q.maybeSingle()
+  const { data } = await (await ownVehicles(req, supabase.from('vehicles').select(SELECT).eq('id', Number(id)))).maybeSingle()
   return data
 }
 
-router.get('/vehiculos', auth(STAFF), h(async (req, res) => {
+router.get('/vehiculos', auth(FLEET), h(async (req, res) => {
   let q = supabase.from('vehicles').select(SELECT).order('code')
-  q = req.user.role === 'prestamista' ? q.eq('collector_id', req.user.id) : bySite(req, q, 'collector_id')
+  q = req.user.role === 'administrador' ? bySite(req, q, 'collector_id') : await ownVehicles(req, q)
   const { data, error } = await q
   if (error) throw error
   const today = todayBogota()
@@ -99,7 +105,7 @@ router.get('/vehiculos', auth(STAFF), h(async (req, res) => {
   })))
 }))
 
-router.get('/vehiculos/:id', auth(STAFF), h(async (req, res) => {
+router.get('/vehiculos/:id', auth(FLEET), h(async (req, res) => {
   const v = await findVehicle(req, req.params.id)
   if (!v) return fail(res, 'Vehículo no encontrado', 404)
   const userSel = 'user:users!USER_FK(name, last_name)'
@@ -302,9 +308,14 @@ const fullDriver = (d, vehicles = [], today = todayBogota()) => ({
 router.get('/conductores', auth(STAFF), h(async (req, res) => {
   let q = supabase.from('drivers').select('*').order('name')
   if (req.query.activos) q = q.eq('active', true)
-  const [{ data, error }, { data: veh }] = await Promise.all([q, supabase.from('vehicles').select('id, code, plate, driver_id').not('driver_id', 'is', null)])
+  const [{ data, error }, { data: veh }, { data: users }] = await Promise.all([q, supabase.from('vehicles').select('id, code, plate, driver_id').not('driver_id', 'is', null),
+    supabase.from('users').select('id, username, role, active, identification').in('role', ['conductor', 'prestamista'])])
   if (error) throw error
-  res.send(data.map((d) => fullDriver(d, veh || [])))
+  res.send(data.map((d) => {
+    const u = (users || []).find((x) => x.id === d.user_id)
+    const lender = (users || []).find((x) => x.role === 'prestamista' && x.identification === d.identification)
+    return { ...fullDriver(d, veh || []), access: u ? { userId: u.id, username: u.username, role: u.role, active: u.active } : null, isLender: Boolean(lender) }
+  }))
 }))
 
 router.post('/conductores', auth(ADMIN), h(async (req, res) => {
@@ -351,6 +362,44 @@ router.delete('/vehiculos/:id/:kind(tanqueos|mantenimientos)/:rid', auth(ADMIN),
   if (error) throw error
   await audit(req, 'eliminar', table === 'vehicle_fuel_logs' ? 'tanqueo' : 'mantenimiento', r.id, {})
   res.send({ ok: true })
+}))
+
+// Acceso del conductor a la app (KU-021). Si su documento es el de un prestamista, se enlaza a ese usuario.
+router.post('/conductores/:id/acceso', auth(ADMIN), h(async (req, res) => {
+  const b = req.body || {}
+  const { data: d } = await supabase.from('drivers').select('*').eq('id', Number(req.params.id)).maybeSingle()
+  if (!d) return fail(res, 'Conductor no encontrado', 404)
+  if (!d.active) return fail(res, 'Activa el conductor antes de darle acceso', 400)
+  const { data: same } = await supabase.from('users').select('id, role, username, active').eq('identification', d.identification).maybeSingle()
+  if (same && same.role === 'prestamista') {
+    await supabase.from('drivers').update({ user_id: same.id }).eq('id', d.id)
+    await audit(req, 'enlazar_prestamista', 'conductor', d.id, { user: same.id })
+    return res.send({ linked: 'prestamista', username: same.username, message: 'Es prestamista: entra con su usuario y ve el vehículo en "Mi vehículo".' })
+  }
+  if (same && same.role !== 'conductor') return fail(res, `Ese documento ya es de un usuario con rol ${same.role}`, 400)
+  const username = clean(b.username)?.toLowerCase()
+  if (!username || !/^[a-z0-9._-]{3,30}$/.test(username)) return fail(res, 'El usuario solo admite letras, números, punto, guion y guion bajo (3 a 30)', 400)
+  if (!same && (!b.password || String(b.password).length < 8)) return fail(res, 'La contraseña debe tener al menos 8 caracteres', 400)
+  if (same && b.password && String(b.password).length < 8) return fail(res, 'La contraseña debe tener al menos 8 caracteres', 400)
+  const row = { identification: d.identification, name: d.name, last_name: d.last_name || '', phone: d.phone, username, role: 'conductor', active: true }
+  if (b.password) row.password_hash = await bcrypt.hash(String(b.password), 10)
+  const { data: u, error } = same
+    ? await supabase.from('users').update(row).eq('id', same.id).select('id, username').single()
+    : await supabase.from('users').insert(row).select('id, username').single()
+  if (error) return error.code === '23505' ? fail(res, 'Ese nombre de usuario ya existe', 409) : fail(res, error)
+  await supabase.from('drivers').update({ user_id: u.id }).eq('id', d.id)
+  await audit(req, same ? 'editar' : 'crear', 'usuario_conductor', u.id, { driver: d.id })
+  res.send({ linked: 'conductor', username: u.username })
+}))
+
+router.delete('/conductores/:id/acceso', auth(ADMIN), h(async (req, res) => {
+  const { data: d } = await supabase.from('drivers').select('id, user_id').eq('id', Number(req.params.id)).maybeSingle()
+  if (!d?.user_id) return fail(res, 'Este conductor no tiene acceso', 404)
+  const { data: u } = await supabase.from('users').select('id, role').eq('id', d.user_id).maybeSingle()
+  if (u?.role === 'conductor') await supabase.from('users').update({ active: false }).eq('id', u.id)
+  await supabase.from('drivers').update({ user_id: null }).eq('id', d.id)
+  await audit(req, 'quitar_acceso', 'conductor', d.id)
+  res.status(204).end()
 }))
 
 module.exports = router
