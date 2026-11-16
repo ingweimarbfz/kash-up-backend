@@ -107,6 +107,14 @@ aportado, configurable). Las reglas están en la base de datos (`apply_fund_move
 - `POST /clientes/:id/traslado {lenderId, address?, neighborhood?, city?, lat?, lng?, utilityBillUrl?, note}`: el cliente pasa a la ruta de otro prestamista (y a su nueva dirección, con recibo nuevo). Sus créditos activos pasan a ese prestamista (`transfer_customer`), que desde ahí los cobra. Queda en `customer_transfers` y en la ficha del cliente. Cambiar el prestamista desde "Editar" hace lo mismo.
 - Un prestamista solo presta a clientes de su ruta y sin créditos activos con otro prestamista (`check_credit_lender`).
 
+## Reportes, dashboard y buscador (Etapa 4)
+
+- `GET /reportes/recaudo|colocacion|resultados?desde&hasta&prestamista`: series por día (por mes si el rango pasa de 62 días), totales y desglose por prestamista. Por defecto el mes en curso; máximo un año.
+- `GET /reportes/cartera?prestamista`: foto de hoy de la cartera activa, con cartera en riesgo (saldo de créditos con alguna cuota vencida / saldo total) y tramos de atraso (1-7, 8-30, 31-60, 60+).
+- Los intereses cobrados salen de la parte de interés de cada cuota pagada (`interés de la cuota × lo abonado / valor de la cuota`). Los abonos a capital cuentan solo como capital.
+- `GET /dashboard/extra`: recaudo de los últimos 14 días, salud de la cartera y, según el rol, avance de las rutas y mayores atrasos (admin) o promesas de pago y avance de la ruta (prestamista).
+- `GET /buscar?q=`: busca a la vez clientes (nombre, cédula, celular), créditos, recibos (`RC-0003`), gastos (`GA-0002`), productos y usuarios. El prestamista solo ve lo suyo.
+
 ## Inventario por bodegas
 
 Cada negocio tiene una **bodega principal** (en su sede principal) y puede crear sedes y varias bodegas por sede.
