@@ -189,3 +189,8 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 - Migración `20261116000017_usuario_conductor.sql`: rol `conductor` y `drivers.user_id`.
 - `POST /conductores/:id/acceso` crea o actualiza el usuario del conductor; si su documento es de un prestamista, lo enlaza a ese usuario. `DELETE` lo quita.
 - El conductor solo ve `GET /vehiculos` y `GET /vehiculos/:id` de los vehículos que conduce (sin registrar nada). El prestamista ve los que cobra y los que conduce.
+
+## KU-022 · Reportes en formato PDF
+
+- `GET /reportes/recaudo?detalle=1` agrega el detalle de pagos y `GET /reportes/cartera?detalle=1` los créditos atrasados, para la hoja imprimible.
+- En Reportes (solo administrador): "Ver PDF" de la pestaña actual e "Informe completo" con las cuatro secciones, en hoja carta con encabezado del negocio, listos para imprimir o guardar como PDF.
