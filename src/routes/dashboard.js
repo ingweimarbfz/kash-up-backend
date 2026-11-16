@@ -96,6 +96,9 @@ router.get('/dashboard', auth(), h(async (req, res) => {
     })
   }
 
+  // Conductor: su tablero es el reporte del vehículo (la app lo lleva a Mi vehículo).
+  if (role === 'conductor') return res.send({ role, kpis: {} })
+
   // Cliente
   const { data: customer } = await supabase.from('customers').select('id').eq('user_id', req.user.id).maybeSingle()
   if (!customer) return res.send({ role, kpis: { saldoPendiente: 0, proximaCuota: null, cuotasPagadas: 0, creditosActivos: 0 }, creditos: [] })

@@ -45,6 +45,7 @@ router.get('/usuarios', auth(ADMIN), h(async (req, res) => {
 router.post('/usuarios', auth(ADMIN), h(async (req, res) => {
   const b = req.body || {}
   const errors = validate(b, { creating: true })
+  if (b.role === 'conductor') errors.push('El acceso de un conductor se crea desde Conductores, para enlazarlo con su vehículo')
   if (errors.length) return fail(res, errors.join('. '), 400)
   const { data, error } = await supabase.from('users').insert({
     identification: clean(b.identification),
