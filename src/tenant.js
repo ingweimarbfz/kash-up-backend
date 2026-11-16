@@ -12,7 +12,11 @@ const currentOrg = () => ctx.getStore()?.orgId ?? null
 const runAsOrg = (orgId, fn) => ctx.run({ orgId: Number(orgId) }, fn)
 
 // Tablas con org_id. Cada etapa agrega aquí sus tablas nuevas.
-const TENANT_TABLES = new Set(['users', 'app_settings', 'audit_log'])
+const TENANT_TABLES = new Set([
+  'users', 'app_settings', 'audit_log',
+  'customers', 'interest_rates', 'product_categories', 'products', 'inventory_movements', 'discounts',
+  'credits', 'credit_items', 'credit_references', 'installments', 'credit_balances'
+])
 
 const withOrg = (rows, org) => (Array.isArray(rows) ? rows.map((r) => ({ ...r, org_id: org })) : { ...rows, org_id: org })
 

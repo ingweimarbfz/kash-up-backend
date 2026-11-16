@@ -30,3 +30,11 @@ const imageError = (v, maxKb = 1500) => {
 }
 
 module.exports = { HttpError, fail, h, clean, EMAIL_RE, PHONE_RE, DOC_RE, imageError }
+
+// Fecha de hoy en Colombia (YYYY-MM-DD).
+const todayBogota = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date())
+module.exports.todayBogota = todayBogota
+
+// Número con validación: devuelve null si viene vacío.
+const num = (v) => (v === '' || v === null || v === undefined ? null : Number(v))
+module.exports.num = num
