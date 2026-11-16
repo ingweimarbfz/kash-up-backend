@@ -113,7 +113,7 @@ router.post('/inventario/movimientos', auth(ADMIN), h(async (req, res) => {
     product_id: Number(b.productId), type: b.type, quantity, unit_cost: b.type === 'entrada' && b.unitCost !== '' && b.unitCost !== undefined ? Number(b.unitCost) : null,
     note: clean(b.note), user_id: req.user.id
   }).select('id').single()
-  if (error) return /Stock insuficiente|Producto no encontrado/.test(error.message) ? fail(res, error.message, 400) : fail(res, error)
+  if (error) return error.code === 'P0001' ? fail(res, error.message, 400) : fail(res, error)
   await audit(req, 'crear', 'movimiento_inventario', data.id, { type: b.type, quantity, product: Number(b.productId) })
   const { data: p } = await supabase.from('products').select(PRODUCT_COLUMNS).eq('id', Number(b.productId)).single()
   res.status(201).send(productDTO(p))

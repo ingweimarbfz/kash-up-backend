@@ -43,6 +43,27 @@ scripts/seed.js        crea un negocio nuevo con su administrador
 | PUT | `/configuracion` | administrador |
 | GET | `/dashboard` | todos (cifras según el rol) |
 | GET | `/auditoria` | administrador |
+| GET/POST/PUT | `/clientes`, `/clientes/:id` | administrador, prestamista (sus clientes) |
+| POST | `/clientes/:id/usuario` | administrador (crea el acceso del cliente) |
+| GET | `/prestamistas` | administrador, prestamista |
+| GET/POST/PUT | `/tasas` | administrador (lectura: prestamista) |
+| POST | `/simulador` | administrador, prestamista |
+| GET/POST/PUT | `/inventario/categorias`, `/inventario/productos` | administrador (lectura: prestamista) |
+| GET/POST | `/inventario/movimientos`, GET `/inventario/resumen` | administrador |
+| GET/POST/PUT | `/descuentos` | administrador (lectura: prestamista) |
+| POST | `/creditos/simular` | administrador, prestamista |
+| GET/POST | `/creditos`, GET `/creditos/:id` | administrador, prestamista (los suyos) |
+| POST | `/creditos/:id/anular` | administrador |
+| GET | `/mis-creditos` | cliente |
+
+## Cálculo de créditos (`src/lib/schedule.js`)
+| Modalidad | Cómo se calcula |
+|---|---|
+| `fija` | Interés plano: capital × tasa × meses de plazo (o × 1 si la tasa es por todo el crédito). Cuotas iguales. |
+| `sobre_saldo` | Cuota fija con interés sobre el saldo (sistema francés). La tasa mensual se lleva al periodo de la cuota. |
+| `anticipada` | El interés se descuenta al desembolsar; las cuotas solo pagan capital. |
+
+Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de excluir domingos. `npm test` corre las pruebas del cálculo y del scoring.
 
 ## Despliegue
 `render.yaml` define el servicio web para Render. Variables: `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `JWT_SECRET`, `CORS_ORIGIN`.
