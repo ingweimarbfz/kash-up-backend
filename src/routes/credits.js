@@ -25,6 +25,12 @@ const prepare = async (req, b) => {
   const { data: customer } = await cq.maybeSingle()
   if (!customer) throw new Bad('Selecciona un cliente válido')
   if (customer.status !== 'activo') throw new Bad(`El cliente está ${customer.status}; no se le pueden otorgar créditos`)
+  // Exclusividad: si el cliente ya tiene créditos con otro prestamista, solo el administrador le presta.
+  if (req.user.role === 'prestamista') {
+    const { data: other } = await supabase.from('credits').select('lender:users!credits_lender_id_fkey(name, last_name)')
+      .eq('customer_id', customer.id).neq('status', 'anulado').neq('lender_id', req.user.id).not('lender_id', 'is', null).limit(1)
+    if (other?.length) throw new Bad(`Este cliente ya tiene créditos con ${fullName(other[0].lender)}. Solo el administrador puede otorgarle uno con otro prestamista`)
+  }
 
   // Productos
   let items = []
