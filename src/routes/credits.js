@@ -7,6 +7,7 @@ const { bySite } = require('../site')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
 const { buildSchedule, suggestFirstDue, intervalDays } = require('../lib/schedule')
+const { bestFor, loadActive } = require('../promo')
 
 const router = express.Router()
 const money = (v) => Math.round(Number(v) || 0)
@@ -52,7 +53,7 @@ const prepare = async (req, b) => {
     if (!wanted.length) throw new Bad('Agrega al menos un producto')
     const ids = [...new Set(wanted.map((i) => Number(i.productId)))]
     if (ids.length !== wanted.length) throw new Bad('Un producto aparece dos veces; ajusta la cantidad en una sola línea')
-    const { data: products, error } = await supabase.from('products').select('id, name, price, active').in('id', ids)
+    const [{ data: products, error }, promos] = await Promise.all([supabase.from('products').select('id, name, price, active, category_id').in('id', ids), loadActive()])
     if (error) throw error
     const { data: stocks } = await supabase.from('warehouse_stock').select('product_id, stock').eq('warehouse_id', warehouse.id).in('product_id', ids)
     for (const p of products) p.stock = stocks?.find((x) => x.product_id === p.id)?.stock ?? 0
@@ -63,8 +64,11 @@ const prepare = async (req, b) => {
       if (!Number.isInteger(qty)) throw new Bad(`Cantidad inválida para ${p.name}`)
       if (qty > p.stock) throw new Bad(`Stock insuficiente de "${p.name}" en ${warehouse.name} (disponible: ${p.stock})`)
       // El precio lo toma del inventario; solo el administrador puede ajustarlo en el crédito.
-      const unit = req.user.role === 'administrador' && w.unitPrice !== undefined && w.unitPrice !== '' ? money(w.unitPrice) : money(p.price)
-      items.push({ product_id: p.id, product_name: p.name, quantity: qty, unit_price: unit, subtotal: unit * qty })
+      // Si hay una promoción vigente, el precio base es el de la promoción (KU-020).
+      const best = bestFor(promos, p)
+      const base = best ? best.price : money(p.price)
+      const unit = req.user.role === 'administrador' && w.unitPrice !== undefined && w.unitPrice !== '' && money(w.unitPrice) !== base ? money(w.unitPrice) : base
+      items.push({ product_id: p.id, product_name: p.name, quantity: qty, unit_price: unit, subtotal: unit * qty, list_price: money(p.price), promotion_id: best && unit === best.price ? best.promo.id : null, promotion_name: best && unit === best.price ? [best.promo.emoji, best.promo.tag || best.promo.name].filter(Boolean).join(' ') : null })
     }
     productsTotal = items.reduce((s, i) => s + i.subtotal, 0)
     if (Number(b.discountId)) {
@@ -323,7 +327,7 @@ const detail = async (req, id) => {
   if (!c) return null
   const [{ data: inst }, { data: items }, { data: refs }, bal, { data: pays }, { data: links }] = await Promise.all([
     supabase.from('installments').select('id, number, due_date, capital, interest, amount, paid_amount, waived, paid_at, status').eq('credit_id', id).order('number'),
-    supabase.from('credit_items').select('product_id, product_name, quantity, unit_price, subtotal').eq('credit_id', id),
+    supabase.from('credit_items').select('product_id, product_name, quantity, unit_price, subtotal, list_price, promotion_name').eq('credit_id', id),
     supabase.from('credit_references').select('name, phone, relationship, address').eq('credit_id', id),
     balancesFor([id]),
     supabase.from('payments').select('id, number, kind, amount, method, reference, paid_on, note, status, void_reason, created_at, user:users!payments_user_id_fkey(name, last_name)').eq('credit_id', id).order('id', { ascending: false }),
@@ -339,7 +343,7 @@ const detail = async (req, id) => {
     interestName: c.interest_name, intervalDays: c.interval_days, skipSundays: c.skip_sundays, firstDueDate: c.first_due_date,
     totalInterest: Number(c.total_interest), disbursedAmount: Number(c.disbursed_amount), notes: c.notes, voidReason: c.void_reason,
     createdBy: fullName(c.creator), warehouse: c.warehouse ? { id: c.warehouse.id, name: c.warehouse.name } : null, capitalBalance: Number(bal[id]?.capital_balance ?? 0),
-    items: (items || []).map((i) => ({ productId: i.product_id, name: i.product_name, quantity: i.quantity, unitPrice: Number(i.unit_price), subtotal: Number(i.subtotal) })),
+    items: (items || []).map((i) => ({ productId: i.product_id, name: i.product_name, quantity: i.quantity, unitPrice: Number(i.unit_price), subtotal: Number(i.subtotal), listPrice: i.list_price === null ? null : Number(i.list_price), promotion: i.promotion_name })),
     references: refs || [],
     renewedFrom: from ? { id: from.id, number: from.number } : null, payoffAmount: Number(c.payoff_amount || 0),
     renewedBy: renewedBy ? { id: renewedBy.id, number: renewedBy.number } : null,

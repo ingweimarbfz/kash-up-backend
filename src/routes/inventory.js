@@ -1,6 +1,7 @@
 const express = require('express')
 const supabase = require('../db')
 const { h, fail, clean, num, imageError } = require('../http')
+const { bestFor, promoBrief, loadActive, statusOf, priceWith, hm, covers } = require('../promo')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
 const { currentOrg } = require('../tenant')
@@ -174,10 +175,16 @@ router.put('/inventario/categorias/:id', auth(ADMIN), h(async (req, res) => {
 
 // ---------- Productos ----------
 const PRODUCT_COLUMNS = 'id, sku, name, category_id, brand, description, cost, price, stock, min_stock, photo_url, active, category:product_categories(id, name)'
-const productDTO = (p) => ({
-  id: p.id, sku: p.sku, name: p.name, categoryId: p.category_id, category: p.category?.name ?? null, brand: p.brand, description: p.description,
-  cost: Number(p.cost), price: Number(p.price), stock: p.stock, minStock: p.min_stock, lowStock: p.stock <= p.min_stock, photoUrl: p.photo_url, active: p.active
-})
+// promos: promociones activas; si alguna está vigente para el producto, se informa el precio con promoción.
+const productDTO = (p, promos = []) => {
+  const best = bestFor(promos, p)
+  return {
+    id: p.id, sku: p.sku, name: p.name, categoryId: p.category_id, category: p.category?.name ?? null, brand: p.brand, description: p.description,
+    cost: Number(p.cost), price: Number(p.price), stock: p.stock, minStock: p.min_stock, lowStock: p.stock <= p.min_stock, photoUrl: p.photo_url, active: p.active,
+    promo: best ? promoBrief(best.promo, best.price, Number(p.price)) : null, finalPrice: best ? best.price : Number(p.price),
+    ...(p.gallery !== undefined ? { gallery: p.gallery || [] } : {})
+  }
+}
 const validateProduct = async (b) => {
   const errors = []
   if (!clean(b.name)) errors.push('El nombre es requerido')
@@ -190,11 +197,16 @@ const validateProduct = async (b) => {
   if (b.cost !== undefined && b.cost !== '' && !(Number(b.cost) >= 0)) errors.push('Costo inválido')
   if (b.minStock !== undefined && b.minStock !== '' && !(Number.isInteger(Number(b.minStock)) && Number(b.minStock) >= 0)) errors.push('Stock mínimo inválido')
   const e = imageError(b.photoUrl, 600); if (e) errors.push(`Foto: ${e}`)
+  if (b.gallery !== undefined) {
+    if (!Array.isArray(b.gallery) || b.gallery.length > 3) errors.push('Puedes agregar hasta 3 imágenes adicionales')
+    else b.gallery.forEach((g, i) => { const ge = imageError(g, 600); if (ge) errors.push(`Imagen adicional ${i + 1}: ${ge}`) })
+  }
   return errors
 }
 const productRow = (b) => ({
   sku: clean(b.sku), name: clean(b.name), category_id: num(b.categoryId), brand: clean(b.brand), description: clean(b.description),
-  cost: Number(b.cost) || 0, price: Number(b.price) || 0, min_stock: Number(b.minStock) || 0, photo_url: clean(b.photoUrl), active: b.active !== false
+  cost: Number(b.cost) || 0, price: Number(b.price) || 0, min_stock: Number(b.minStock) || 0, photo_url: clean(b.photoUrl), active: b.active !== false,
+  ...(Array.isArray(b.gallery) ? { gallery: b.gallery.filter(Boolean).slice(0, 3) } : {})
 })
 
 // Con ?bodega= o ?sede=, stock es lo que hay en esas bodegas (y byWarehouse el detalle).
@@ -205,18 +217,37 @@ router.get('/inventario/productos', auth(STAFF), h(async (req, res) => {
   const whs = await warehouseFilter(req)
   let sq = supabase.from('warehouse_stock').select('product_id, warehouse_id, stock, warehouse:warehouses(name)').gt('stock', 0)
   if (whs) sq = sq.in('warehouse_id', whs.length ? whs : [0])
-  const [{ data, error }, { data: stock, error: e2 }] = await Promise.all([q, sq])
+  const [{ data, error }, { data: stock, error: e2 }, promos] = await Promise.all([q, sq, loadActive()])
   if (error) throw error
   if (e2) throw e2
   let rows = data.map((p) => {
     const ls = stock.filter((s) => s.product_id === p.id)
-    const dto = productDTO(p)
+    const dto = productDTO(p, promos)
     if (whs) { dto.stock = ls.reduce((a, s) => a + s.stock, 0); dto.lowStock = dto.stock <= dto.minStock }
     dto.byWarehouse = ls.map((s) => ({ warehouseId: s.warehouse_id, name: s.warehouse?.name, stock: s.stock }))
     return dto
   })
   if (req.query.disponibles === '1') rows = rows.filter((p) => p.stock > 0)
+  if (req.query.promo === '1') rows = rows.filter((p) => p.promo)
   res.send(rows)
+}))
+
+// Ficha del producto (vista tipo PDP): galería, existencias por bodega, promoción vigente y las próximas.
+router.get('/inventario/productos/:id', auth(STAFF), h(async (req, res) => {
+  const id = Number(req.params.id)
+  const [{ data: p }, { data: stock }, promos, { data: sold }] = await Promise.all([
+    supabase.from('products').select(`${PRODUCT_COLUMNS}, gallery`).eq('id', id).maybeSingle(),
+    supabase.from('warehouse_stock').select('warehouse_id, stock, warehouse:warehouses(name, site:sites(name))').eq('product_id', id).gt('stock', 0),
+    loadActive(),
+    supabase.from('credit_items').select('quantity, credit:credits!inner(status)').eq('product_id', id).neq('credit.status', 'anulado')
+  ])
+  if (!p) return fail(res, 'Producto no encontrado', 404)
+  const dto = productDTO(p, promos)
+  dto.byWarehouse = (stock || []).map((s) => ({ warehouseId: s.warehouse_id, name: s.warehouse?.name, site: s.warehouse?.site?.name ?? null, stock: s.stock }))
+  dto.sold = (sold || []).reduce((t, x) => t + x.quantity, 0)
+  dto.upcoming = promos.filter((x) => x.id !== dto.promo?.id && covers(x, p) && ['programada', 'fuera_de_horario'].includes(statusOf(x)))
+    .map((x) => ({ ...promoBrief(x, priceWith(x, Number(p.price)), Number(p.price)), status: statusOf(x), startsAt: x.starts_at, timeFrom: hm(x.time_from), weekdays: x.weekdays }))
+  res.send(dto)
 }))
 
 router.post('/inventario/productos', auth(ADMIN), h(async (req, res) => {
@@ -234,7 +265,7 @@ router.post('/inventario/productos', auth(ADMIN), h(async (req, res) => {
   }
   await audit(req, 'crear', 'producto', data.id)
   const { data: p } = await supabase.from('products').select(PRODUCT_COLUMNS).eq('id', data.id).single()
-  res.status(201).send(productDTO(p))
+  res.status(201).send(productDTO(p, await loadActive()))
 }))
 
 router.put('/inventario/productos/:id', auth(ADMIN), h(async (req, res) => {
@@ -244,7 +275,7 @@ router.put('/inventario/productos/:id', auth(ADMIN), h(async (req, res) => {
   if (error) return error.code === '23505' ? fail(res, 'Ya existe un producto con ese código (SKU)', 409) : fail(res, error)
   if (!data) return fail(res, 'Producto no encontrado', 404)
   await audit(req, 'editar', 'producto', data.id)
-  res.send(productDTO(data))
+  res.send(productDTO(data, await loadActive()))
 }))
 
 // ---------- Existencias por bodega ----------
@@ -393,6 +424,94 @@ router.put('/descuentos/:id', auth(ADMIN), h(async (req, res) => {
   if (!data) return fail(res, 'Descuento no encontrado', 404)
   await audit(req, 'editar', 'descuento', data.id)
   res.send(discountDTO(data))
+}))
+
+// ---------- Promociones (KU-020) ----------
+const STATUS_LABEL = { vigente: 'Vigente', programada: 'Programada', fuera_de_horario: 'Fuera de horario', vencida: 'Vencida', inactiva: 'Inactiva' }
+const promotionDTO = (p, cats = [], prods = []) => {
+  const status = statusOf(p)
+  return {
+    id: p.id, name: p.name, tag: p.tag, emoji: p.emoji, color: p.color, description: p.description, type: p.type, value: Number(p.value),
+    startsAt: p.starts_at, endsAt: p.ends_at, timeFrom: hm(p.time_from), timeTo: hm(p.time_to), weekdays: p.weekdays || [],
+    scope: p.scope, categoryIds: (p.category_ids || []).map(Number), productIds: (p.product_ids || []).map(Number),
+    categories: (p.category_ids || []).map((id) => cats.find((c) => c.id === Number(id))?.name).filter(Boolean),
+    products: (p.product_ids || []).map((id) => prods.find((x) => x.id === Number(id))?.name).filter(Boolean),
+    active: p.active, status, statusLabel: STATUS_LABEL[status], createdAt: p.created_at
+  }
+}
+const ids = (v) => [...new Set((Array.isArray(v) ? v : []).map(Number).filter((x) => Number.isInteger(x) && x > 0))]
+const validatePromotion = (b) => {
+  const errors = []
+  if (!clean(b.name)) errors.push('El nombre es requerido')
+  if (!['porcentaje', 'valor'].includes(b.type)) errors.push('Tipo inválido')
+  if (!(Number(b.value) > 0)) errors.push('El valor debe ser mayor que cero')
+  if (b.type === 'porcentaje' && Number(b.value) > 100) errors.push('El porcentaje no puede superar 100')
+  if (clean(b.tag) && clean(b.tag).length > 24) errors.push('El tag admite máximo 24 caracteres')
+  if (clean(b.emoji) && [...clean(b.emoji)].length > 4) errors.push('Elige un solo emoji')
+  const s = clean(b.startsAt); const e = clean(b.endsAt)
+  if (s && isNaN(Date.parse(s))) errors.push('Fecha de inicio inválida')
+  if (e && isNaN(Date.parse(e))) errors.push('Fecha de fin inválida')
+  if (s && e && Date.parse(e) <= Date.parse(s)) errors.push('La promoción debe terminar después de empezar')
+  const tf = clean(b.timeFrom); const tt = clean(b.timeTo)
+  if (Boolean(tf) !== Boolean(tt)) errors.push('Indica la hora de inicio y la de fin de la franja diaria')
+  if (tf && tt && tf === tt) errors.push('La franja diaria debe tener horas distintas')
+  if (!['todos', 'categorias', 'productos'].includes(b.scope || 'todos')) errors.push('Alcance inválido')
+  if (b.scope === 'categorias' && !ids(b.categoryIds).length) errors.push('Elige al menos una categoría')
+  if (b.scope === 'productos' && !ids(b.productIds).length) errors.push('Elige al menos un producto')
+  return errors
+}
+// Fechas con hora de Colombia (datetime-local llega sin zona).
+const atBogota = (v) => (clean(v) ? (/[zZ]|[+-]\d\d:\d\d$/.test(v) ? new Date(v).toISOString() : new Date(`${v.length === 16 ? `${v}:00` : v}-05:00`).toISOString()) : null)
+const promotionRow = (b) => ({
+  name: clean(b.name), tag: clean(b.tag)?.toUpperCase() ?? null, emoji: clean(b.emoji), description: clean(b.description),
+  color: /^#[0-9A-Fa-f]{6}$/.test(b.color || '') ? b.color : '#111111', type: b.type, value: Number(b.value),
+  starts_at: atBogota(b.startsAt), ends_at: atBogota(b.endsAt), time_from: clean(b.timeFrom), time_to: clean(b.timeTo),
+  weekdays: ids(b.weekdays).filter((d) => d <= 7), scope: b.scope || 'todos',
+  category_ids: b.scope === 'categorias' ? ids(b.categoryIds) : [], product_ids: b.scope === 'productos' ? ids(b.productIds) : [],
+  active: b.active !== false, updated_at: new Date().toISOString()
+})
+const catalogs = async () => {
+  const [{ data: cats }, { data: prods }] = await Promise.all([supabase.from('product_categories').select('id, name'), supabase.from('products').select('id, name')])
+  return [cats || [], prods || []]
+}
+router.get('/promociones', auth(STAFF), h(async (req, res) => {
+  const [{ data, error }, [cats, prods], { data: used }] = await Promise.all([
+    supabase.from('promotions').select('*').order('created_at', { ascending: false }), catalogs(),
+    supabase.from('credit_items').select('promotion_id, quantity, list_price, unit_price').not('promotion_id', 'is', null)
+  ])
+  if (error) throw error
+  const order = { vigente: 0, fuera_de_horario: 1, programada: 2, vencida: 3, inactiva: 4 }
+  res.send(data.map((p) => {
+    const u = (used || []).filter((x) => x.promotion_id === p.id)
+    return { ...promotionDTO(p, cats, prods), uses: u.reduce((t, x) => t + x.quantity, 0), savings: u.reduce((t, x) => t + (Number(x.list_price) - Number(x.unit_price)) * x.quantity, 0) }
+  }).sort((a, b) => order[a.status] - order[b.status]))
+}))
+router.post('/promociones', auth(ADMIN), h(async (req, res) => {
+  const b = req.body || {}
+  const errors = validatePromotion(b)
+  if (errors.length) return fail(res, errors.join('. '), 400)
+  const { data, error } = await supabase.from('promotions').insert({ ...promotionRow(b), created_by: req.user.id }).select().single()
+  if (error) throw error
+  await audit(req, 'crear', 'promocion', data.id, { name: data.name, tag: data.tag })
+  res.status(201).send(promotionDTO(data, ...(await catalogs())))
+}))
+router.put('/promociones/:id', auth(ADMIN), h(async (req, res) => {
+  const b = req.body || {}
+  const errors = validatePromotion(b)
+  if (errors.length) return fail(res, errors.join('. '), 400)
+  const { data, error } = await supabase.from('promotions').update(promotionRow(b)).eq('id', Number(req.params.id)).select().maybeSingle()
+  if (error) throw error
+  if (!data) return fail(res, 'Promoción no encontrada', 404)
+  await audit(req, 'editar', 'promocion', data.id, { active: data.active })
+  res.send(promotionDTO(data, ...(await catalogs())))
+}))
+router.delete('/promociones/:id', auth(ADMIN), h(async (req, res) => {
+  const id = Number(req.params.id)
+  const { count } = await supabase.from('credit_items').select('id', { count: 'exact', head: true }).eq('promotion_id', id)
+  if (count) return fail(res, 'Esta promoción ya se usó en créditos; desactívala en lugar de eliminarla', 400)
+  await supabase.from('promotions').delete().eq('id', id)
+  await audit(req, 'eliminar', 'promocion', id)
+  res.status(204).end()
 }))
 
 module.exports = router
