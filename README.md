@@ -90,6 +90,17 @@ aportado, configurable). Las reglas están en la base de datos (`apply_fund_move
   el crédito anterior queda `renovado`. Anular el crédito nuevo reactiva el anterior.
 - **Un prestamista por cliente:** si el cliente ya tiene créditos con un prestamista, otro prestamista no le puede prestar; solo el administrador.
 
+## Cobro: rutero, visitas, gastos, cierre, morosos y mapa (etapa 3)
+
+- `GET /ruta?fecha=&prestamista=&todos=1`: cuotas que vencen ese día y las vencidas de los créditos activos del prestamista, en el orden de la ruta (`customers.route_order`), con lo cobrado y la visita del día. `PUT /ruta/orden` guarda el orden.
+- `GET /rutas?fecha=` (administrador): avance de cada ruta, caja, gastos y si la jornada está cerrada.
+- `POST /visitas`: visita sin pago (`no_pago`, `no_estaba`, `promesa` con fecha, `otro`) con ubicación.
+- `GET /morosos?prestamista=&tramo=`: créditos en mora por antigüedad (1-7, 8-30, 31-60, 60+ días) con último pago y última visita.
+- `GET /mapa`: clientes con ubicación y su estado (mora, al día, pagó hoy, sin crédito).
+- `GET/POST /gastos`, `POST /gastos/:id/anular`: el gasto sale de la caja del prestamista (o del negocio) con `register_expense`; anular lo devuelve.
+- `GET /cierres/resumen`, `POST /cierres`, `GET /cierres`, `DELETE /cierres/:id` (reabrir, administrador): `close_day` guarda el cuadre (esperado = saldo de la caja, contado, diferencia) y puede entregar efectivo al negocio. Con la jornada cerrada el prestamista no registra pagos ni gastos de ese día (trigger `check_day_open`).
+- Los pagos por transferencia u otro medio entran a la cuenta del negocio; en efectivo, a la caja de quien cobra.
+
 ## Inventario por bodegas
 
 Cada negocio tiene una **bodega principal** (en su sede principal) y puede crear sedes y varias bodegas por sede.

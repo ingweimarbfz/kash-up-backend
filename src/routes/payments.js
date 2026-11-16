@@ -22,8 +22,9 @@ const SELECT = 'id, number, kind, amount, method, reference, paid_on, note, stat
   'credit:credits(id, number, kind, installment_amount, frequency), customer:customers(id, name, last_name, identification, phone, photo_thumb), ' +
   'lender:users!payments_lender_id_fkey(id, name, last_name), user:users!payments_user_id_fkey(name, last_name)'
 
+const receiptNo = (n) => `RC-${String(n).padStart(4, '0')}`
 const toDTO = (p) => ({
-  id: p.id, number: p.number, kind: p.kind, kindLabel: KIND_LABELS[p.kind], amount: Number(p.amount), method: p.method, methodLabel: METHOD_LABELS[p.method],
+  id: p.id, number: receiptNo(p.number), kind: p.kind, kindLabel: KIND_LABELS[p.kind], amount: Number(p.amount), method: p.method, methodLabel: METHOD_LABELS[p.method],
   reference: p.reference, paidOn: p.paid_on, note: p.note, status: p.status, voidReason: p.void_reason, createdAt: p.created_at,
   credit: p.credit ? { id: p.credit.id, number: p.credit.number, kind: p.credit.kind } : null,
   customer: p.customer ? { id: p.customer.id, fullName: fullName(p.customer), identification: p.customer.identification, phone: p.customer.phone, photoThumb: p.customer.photo_thumb } : null,

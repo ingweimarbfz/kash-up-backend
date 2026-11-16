@@ -248,7 +248,7 @@ const detail = async (req, id) => {
     renewedBy: renewedBy ? { id: renewedBy.id, number: renewedBy.number } : null,
     waivedAmount: Number(bal[id]?.waived_amount ?? 0),
     payments: (pays || []).map((p) => ({
-      id: p.id, number: p.number, kind: p.kind, amount: Number(p.amount), method: p.method, reference: p.reference, paidOn: p.paid_on, note: p.note,
+      id: p.id, number: `RC-${String(p.number).padStart(4, '0')}`, kind: p.kind, amount: Number(p.amount), method: p.method, reference: p.reference, paidOn: p.paid_on, note: p.note,
       status: p.status, voidReason: p.void_reason, createdAt: p.created_at, user: fullName(p.user)
     })),
     installments: (inst || []).map((i) => ({

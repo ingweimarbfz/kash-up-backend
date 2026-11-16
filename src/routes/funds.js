@@ -18,7 +18,7 @@ const p0001 = (res, e) => (e.code === 'P0001' ? fail(res, e.message, 400) : fail
 const fullName = (u) => (u ? `${u.name} ${u.last_name || ''}`.trim() : null)
 const MOVE_LABELS = {
   aporte: 'Aporte de capital', retiro: 'Retiro de capital', asignacion: 'Asignación', devolucion_asignacion: 'Devolución de asignación',
-  desembolso: 'Desembolso de crédito', reverso_desembolso: 'Anulación de crédito', recaudo: 'Recaudo', ajuste: 'Ajuste'
+  desembolso: 'Desembolso de crédito', reverso_desembolso: 'Anulación de crédito', recaudo: 'Recaudo', ajuste: 'Ajuste', gasto: 'Gasto', reverso_gasto: 'Anulación de gasto'
 }
 
 const businessAccount = async () => {
