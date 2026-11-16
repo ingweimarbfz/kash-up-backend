@@ -30,6 +30,7 @@ const toDTO = (c, extra = {}) => ({
   photoUrl: c.photo_url ?? null,
   photoThumb: c.photo_thumb ?? null,
   idPhotoUrl: c.id_photo_url ?? null,
+  idPhotoBackUrl: c.id_photo_back_url ?? null,
   lat: c.lat ?? null,
   lng: c.lng ?? null,
   lenderId: c.lender_id,
@@ -61,7 +62,7 @@ const validate = (b) => {
   if (clean(b.email) && !EMAIL_RE.test(clean(b.email))) errors.push('Correo no válido')
   if (!clean(b.address)) errors.push('La dirección es requerida')
   if (!clean(b.photoUrl)) errors.push('La foto del cliente es obligatoria')
-  for (const [k, label] of [['photoUrl', 'La foto'], ['photoThumb', 'La miniatura'], ['idPhotoUrl', 'La foto del documento']]) {
+  for (const [k, label] of [['photoUrl', 'La foto'], ['photoThumb', 'La miniatura'], ['idPhotoUrl', 'La foto del documento (delantera)'], ['idPhotoBackUrl', 'La foto del documento (trasera)']]) {
     const e = imageError(b[k], 900); if (e) errors.push(`${label}: ${e}`)
   }
   if (b.lat !== undefined && b.lat !== null && b.lat !== '' && !(Math.abs(Number(b.lat)) <= 90)) errors.push('Latitud inválida')
@@ -88,6 +89,7 @@ const rowFrom = (b) => ({
   photo_url: clean(b.photoUrl),
   photo_thumb: clean(b.photoThumb),
   id_photo_url: clean(b.idPhotoUrl),
+  id_photo_back_url: clean(b.idPhotoBackUrl),
   lat: num(b.lat),
   lng: num(b.lng),
   credit_limit: num(b.creditLimit),
