@@ -1,6 +1,7 @@
 const express = require('express')
 const supabase = require('../db')
 const { currentOrg } = require('../tenant')
+const { availableFor } = require('./funds')
 const { h, fail, clean, PHONE_RE, todayBogota } = require('../http')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
@@ -101,9 +102,19 @@ const withBad = (fn) => h(async (req, res) => {
   try { await fn(req, res) } catch (e) { if (e.status === 400) return fail(res, e.message, 400); throw e }
 })
 
+// Quién presta: el prestamista que crea, o el elegido / asignado al cliente.
+const resolveLender = (req, b, customer) => (req.user.role === 'prestamista' ? req.user.id : (Number(b.lenderId) || customer.lender_id || null))
+
 router.post('/creditos/simular', auth(STAFF), withBad(async (req, res) => {
-  const p = await prepare(req, req.body || {})
-  res.send({ productsTotal: p.productsTotal, discountAmount: p.discountAmount, discountName: p.discount?.name ?? null, downPayment: p.downPayment, rate: p.rateInfo, ...p.schedule })
+  const b = req.body || {}
+  const p = await prepare(req, b)
+  // Dinero disponible en la caja que presta (solo crédito en efectivo).
+  let funds = null
+  if (b.kind === 'efectivo') {
+    funds = await availableFor(resolveLender(req, b, p.customer))
+    funds.enough = funds.available >= p.schedule.disbursedAmount
+  }
+  res.send({ funds, productsTotal: p.productsTotal, discountAmount: p.discountAmount, discountName: p.discount?.name ?? null, downPayment: p.downPayment, rate: p.rateInfo, ...p.schedule })
 }))
 
 router.post('/creditos', auth(STAFF), withBad(async (req, res) => {
@@ -115,7 +126,7 @@ router.post('/creditos', auth(STAFF), withBad(async (req, res) => {
     if (!PHONE_RE.test(r.phone)) return fail(res, `Celular de la referencia ${r.name} no válido`, 400)
   }
   const p = await prepare(req, b)
-  let lenderId = req.user.role === 'prestamista' ? req.user.id : (Number(b.lenderId) || p.customer.lender_id || null)
+  let lenderId = resolveLender(req, b, p.customer)
   if (lenderId && req.user.role === 'administrador') {
     const { data: l } = await supabase.from('users').select('id').eq('id', lenderId).eq('role', 'prestamista').eq('active', true).maybeSingle()
     if (!l) return fail(res, 'El prestamista seleccionado no existe o está inactivo', 400)

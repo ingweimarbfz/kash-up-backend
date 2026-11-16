@@ -59,6 +59,21 @@ scripts/seed.js        crea un negocio nuevo con su administrador
 | POST | `/creditos/:id/anular` | administrador |
 | GET | `/mis-creditos` | cliente |
 
+## Capital y caja de los prestamistas
+
+El administrador registra **aportes y retiros** de capital en la cuenta del negocio y desde ahí **asigna o quita**
+dinero a cada prestamista (rutero). Un crédito en efectivo se desembolsa de la caja del prestamista que cobra
+(o del negocio si no tiene prestamista); sin saldo suficiente el crédito no se crea, y si se anula el dinero vuelve
+a la misma caja. La cuenta del negocio no puede bajar de la **reserva mínima** (por defecto 10 % del capital
+aportado, configurable). Las reglas están en la base de datos (`apply_fund_movement`).
+
+| Método | Ruta | Rol |
+|---|---|---|
+| GET | `/capital`, `/capital/movimientos?cuenta=negocio|<idPrestamista>` | administrador |
+| POST | `/capital/aportes` (aporte o retiro), `/capital/asignaciones` (asignar o quitar) | administrador |
+| PUT | `/capital/reserva` | administrador |
+| GET | `/mi-caja` | prestamista |
+
 ## Inventario por bodegas
 
 Cada negocio tiene una **bodega principal** (en su sede principal) y puede crear sedes y varias bodegas por sede.

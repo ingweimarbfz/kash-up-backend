@@ -107,7 +107,7 @@ const dupMessage = (e) => (e?.code === '23505' ? 'Ya existe un cliente con esa i
 
 // Lista con saldo de créditos activos.
 router.get('/clientes', auth(STAFF), h(async (req, res) => {
-  let q = scoped(req, supabase.from('customers').select(LIST_COLUMNS)).order('name').limit(1000)
+  let q = scoped(req, supabase.from('customers').select(LIST_COLUMNS)).order('name').limit(Math.min(Number(req.query.limit) || 1000, 1000))
   if (req.query.estado) q = q.eq('status', req.query.estado)
   if (req.user.role === 'administrador' && Number(req.query.prestamista)) q = q.eq('lender_id', Number(req.query.prestamista))
   const term = clean(req.query.q)

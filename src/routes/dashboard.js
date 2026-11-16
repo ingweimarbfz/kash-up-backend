@@ -38,10 +38,11 @@ router.get('/dashboard', auth(), h(async (req, res) => {
   const today = todayBogota()
 
   if (role === 'administrador') {
-    const [{ data: users }, { data: bal }, s] = await Promise.all([
+    const [{ data: users }, { data: bal }, s, { data: funds }] = await Promise.all([
       supabase.from('users').select('role, active'),
       supabase.from('credit_balances').select('balance, capital_balance, overdue_amount, customer_id').eq('status', 'activo'),
-      series()
+      series(),
+      supabase.from('fund_accounts').select('kind, balance')
     ])
     const count = (r) => (users || []).filter((u) => u.role === r && u.active).length
     const enMora = sumBy(bal || [], 'overdue_amount')
@@ -51,7 +52,9 @@ router.get('/dashboard', auth(), h(async (req, res) => {
       kpis: {
         carteraActiva: cartera, capitalPorCobrar: sumBy(bal || [], 'capital_balance'), recaudoHoy: 0, enMora,
         creditosActivos: (bal || []).length, clientesEnMora: new Set((bal || []).filter((b) => Number(b.overdue_amount) > 0).map((b) => b.customer_id)).size,
-        prestamistas: count('prestamista'), clientes: count('cliente')
+        prestamistas: count('prestamista'), clientes: count('cliente'),
+        saldoNegocio: sumBy((funds || []).filter((f) => f.kind === 'negocio'), 'balance'),
+        cajasPrestamistas: sumBy((funds || []).filter((f) => f.kind === 'prestamista'), 'balance')
       },
       series: s,
       cartera: [{ name: 'Al día', value: Math.max(0, cartera - enMora) }, { name: 'En mora', value: enMora }]
@@ -59,16 +62,18 @@ router.get('/dashboard', auth(), h(async (req, res) => {
   }
 
   if (role === 'prestamista') {
-    const [{ data: due }, { data: bal }, s] = await Promise.all([
+    const [{ data: due }, { data: bal }, s, { data: caja }] = await Promise.all([
       supabase.from('installments').select('amount, paid_amount, credit:credits!inner(lender_id, customer_id, status)').in('status', ['pendiente', 'parcial']).lte('due_date', today).eq('credit.lender_id', req.user.id).eq('credit.status', 'activo'),
       supabase.from('credit_balances').select('customer_id, overdue_amount').eq('status', 'activo').eq('lender_id', req.user.id),
-      series(req.user.id)
+      series(req.user.id),
+      supabase.from('fund_accounts').select('balance').eq('user_id', req.user.id).maybeSingle()
     ])
     return res.send({
       role,
       kpis: {
         porCobrarHoy: (due || []).reduce((t, i) => t + Number(i.amount) - Number(i.paid_amount), 0),
         cobradoHoy: 0,
+        miCaja: Number(caja?.balance ?? 0),
         visitasPendientes: new Set((due || []).map((i) => i.credit.customer_id)).size,
         clientesEnMora: new Set((bal || []).filter((b) => Number(b.overdue_amount) > 0).map((b) => b.customer_id)).size
       },
