@@ -216,5 +216,11 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 - Público (sin sesión): `GET /publico/precios?pais=PE` para la página de precios y `GET /publico/catalogo` (todos los países) para el sitio web al compilar.
 - En la app: `GET /plan/modulos` (para el menú), `GET /plan/actual` y `GET /plan/opciones` (Mi plan) y `POST /plan/solicitud`.
 
+## KU-027 · Comprobante de transferencia
+
+- Migración `20261117000021_comprobante_transferencia.sql`: `payments.receipt_url` (foto o PDF en data URL) y `payments.has_receipt`.
+- `POST /creditos/:id/pagos` exige `receiptUrl` cuando el medio es transferencia (opcional en "otro"; máx. 3 MB, JPG/PNG/WEBP o PDF).
+- `GET /pagos/:id/comprobante` devuelve el archivo; `PUT /pagos/:id/comprobante` lo adjunta a un pago anterior (el prestamista solo si no tenía; el administrador también lo cambia).
+
 ## Datos de prueba
 `node scripts/demo-data.js [AAAA-MM-DD] > datos.sql` genera un SQL con sedes, ruteros, conductores, vehículos, clientes, créditos, pagos, gastos, cierres y promociones de las últimas dos semanas. Usa las mismas funciones de la base que la app, así que las cajas y el inventario quedan cuadrados. Las contraseñas son el documento de cada persona.
