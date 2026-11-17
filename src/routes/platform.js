@@ -468,7 +468,7 @@ router.get('/publico/catalogo', h(async (req, res) => {
 // Funcionalidades del negocio para mostrar u ocultar el menú (null = todas).
 router.get('/plan/modulos', auth(ALL), h(async (req, res) => {
   const st = await plan.ensure(currentOrg())
-  res.send({ features: st.features, plan: st.plan ? { id: st.plan.id, name: st.plan.name } : null, country: st.country })
+  res.send({ features: st.features, plan: st.plan ? { id: st.plan.id, name: st.plan.name } : null, country: st.country, status: st.org?.status || null, renewalDate: st.org?.renewalDate || null })
 }))
 
 router.get('/plan/actual', auth(ADMIN), h(async (req, res) => {
