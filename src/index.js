@@ -1,0 +1,36 @@
+const express = require('express')
+const cors = require('cors')
+const compression = require('compression')
+const { PORT, CORS_ORIGINS } = require('./config')
+
+const app = express()
+app.disable('x-powered-by')
+app.use(cors({ origin: CORS_ORIGINS, exposedHeaders: ['X-Total-Count'] }))
+app.use(compression({ threshold: 1024 }))
+app.use(express.json({ limit: '10mb' })) // fotos en base64
+
+app.get('/', (req, res) => res.send({ name: 'API QuontUp360', status: 'ok' }))
+app.get('/health', (req, res) => res.send({ ok: true }))
+
+app.use(require('./routes/auth'))
+app.use(require('./routes/users'))
+app.use(require('./routes/customers'))
+app.use(require('./routes/rates'))
+app.use(require('./routes/inventory'))
+app.use(require('./routes/credits').router)
+app.use(require('./routes/funds').router)
+app.use(require('./routes/payments'))
+app.use(require('./routes/collection'))
+app.use(require('./routes/reports'))
+app.use(require('./routes/vehicles'))
+app.use(require('./routes/settings'))
+app.use(require('./routes/dashboard'))
+app.use(require('./routes/audit'))
+app.use(require('./routes/notifications'))
+app.use(require('./routes/logbook'))
+app.use(require('./routes/platform'))
+
+app.use((req, res) => res.status(404).send({ message: 'Ruta no encontrada' }))
+
+app.listen(PORT, () => console.log(`API QuontUp360 escuchando en el puerto ${PORT}`))
+require('./notify').startScheduler()
