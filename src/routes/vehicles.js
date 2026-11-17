@@ -74,20 +74,23 @@ const lastOilKm = async (ids) => {
 
 // Vehículos que ve cada rol: el prestamista, los que cobra o conduce; el conductor, los que conduce (KU-021).
 const myDrivers = async (userId) => ((await supabase.from('drivers').select('id').eq('user_id', userId)).data || []).map((d) => d.id)
-const ownVehicles = async (req, q) => {
-  if (req.user.role === 'administrador') return q
+// Devuelve un filtro (q => q) y no la consulta: un query builder de supabase es "thenable",
+// así que devolverlo desde una función async lo ejecuta antes de tiempo (KU-025).
+const vehicleScope = async (req) => {
+  if (req.user.role === 'administrador') return (q) => q
   const drivers = await myDrivers(req.user.id)
-  if (req.user.role === 'conductor') return q.in('driver_id', drivers.length ? drivers : [0])
-  return drivers.length ? q.or(`collector_id.eq.${req.user.id},driver_id.in.(${drivers.join(',')})`) : q.eq('collector_id', req.user.id)
+  if (req.user.role === 'conductor') return (q) => q.in('driver_id', drivers.length ? drivers : [0])
+  return drivers.length ? (q) => q.or(`collector_id.eq.${req.user.id},driver_id.in.(${drivers.join(',')})`) : (q) => q.eq('collector_id', req.user.id)
 }
 const findVehicle = async (req, id) => {
-  const { data } = await (await ownVehicles(req, supabase.from('vehicles').select(SELECT).eq('id', Number(id)))).maybeSingle()
+  const scope = await vehicleScope(req)
+  const { data } = await scope(supabase.from('vehicles').select(SELECT).eq('id', Number(id))).maybeSingle()
   return data
 }
 
 router.get('/vehiculos', auth(FLEET), h(async (req, res) => {
   let q = supabase.from('vehicles').select(SELECT).order('code')
-  q = req.user.role === 'administrador' ? bySite(req, q, 'collector_id') : await ownVehicles(req, q)
+  q = req.user.role === 'administrador' ? bySite(req, q, 'collector_id') : (await vehicleScope(req))(q)
   const { data, error } = await q
   if (error) throw error
   const today = todayBogota()
