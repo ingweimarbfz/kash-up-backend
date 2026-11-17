@@ -290,6 +290,8 @@ const driverRow = (b) => {
   }
   if (b.licensePhotoUrl !== undefined) r.license_photo_url = clean(b.licensePhotoUrl)
   if (b.photoUrl !== undefined) r.photo_url = clean(b.photoUrl)
+  if (b.idPhotoUrl !== undefined) r.id_photo_url = clean(b.idPhotoUrl)
+  if (b.idPhotoBackUrl !== undefined) r.id_photo_back_url = clean(b.idPhotoBackUrl)
   const e = []
   if (!r.name) e.push('El nombre es obligatorio')
   if (!r.identification || !/^[0-9A-Za-z.-]{5,15}$/.test(r.identification)) e.push('Número de documento no válido')
@@ -297,11 +299,13 @@ const driverRow = (b) => {
   if (!r.license_number) e.push('El número de la licencia es obligatorio')
   if (!LICENSE_CATS.includes(r.license_category)) e.push('Elige la categoría de la licencia')
   if (!ISO.test(r.license_expires || '')) e.push('La fecha de vencimiento de la licencia es obligatoria')
-  for (const k of ['licensePhotoUrl', 'photoUrl']) if (b[k] && imageError(b[k])) e.push(imageError(b[k]))
+  for (const k of ['licensePhotoUrl', 'photoUrl', 'idPhotoUrl', 'idPhotoBackUrl']) if (b[k] && imageError(b[k])) e.push(imageError(b[k]))
+  // KU-024: foto de la persona y del documento por ambas caras.
+  if (!r.photo_url || !r.id_photo_url || !r.id_photo_back_url) e.push(`Falta ${[!r.photo_url && 'la foto del conductor', !r.id_photo_url && 'la foto del documento (frente)', !r.id_photo_back_url && 'la foto del documento (reverso)'].filter(Boolean).join(', ')}`)
   return { r, e }
 }
 const fullDriver = (d, vehicles = [], today = todayBogota()) => ({
-  ...driverDTO(d), lastName: d.last_name, name: d.name, address: d.address, notes: d.notes, licensePhotoUrl: d.license_photo_url, photoUrl: d.photo_url,
+  ...driverDTO(d), lastName: d.last_name, name: d.name, address: d.address, notes: d.notes, licensePhotoUrl: d.license_photo_url, photoUrl: d.photo_url, idPhotoUrl: d.id_photo_url, idPhotoBackUrl: d.id_photo_back_url,
   licenseDays: daysTo(d.license_expires, today), vehicles: vehicles.filter((v) => v.driver_id === d.id).map((v) => ({ id: v.id, code: v.code, plate: v.plate }))
 })
 
@@ -379,17 +383,16 @@ router.post('/conductores/:id/acceso', auth(ADMIN), h(async (req, res) => {
   if (same && same.role !== 'conductor') return fail(res, `Ese documento ya es de un usuario con rol ${same.role}`, 400)
   const username = clean(b.username)?.toLowerCase()
   if (!username || !/^[a-z0-9._-]{3,30}$/.test(username)) return fail(res, 'El usuario solo admite letras, números, punto, guion y guion bajo (3 a 30)', 400)
-  if (!same && (!b.password || String(b.password).length < 8)) return fail(res, 'La contraseña debe tener al menos 8 caracteres', 400)
-  if (same && b.password && String(b.password).length < 8) return fail(res, 'La contraseña debe tener al menos 8 caracteres', 400)
+  // KU-024: la contraseña inicial es el número de documento; el conductor la cambia en "Mi perfil".
   const row = { identification: d.identification, name: d.name, last_name: d.last_name || '', phone: d.phone, username, role: 'conductor', active: true }
-  if (b.password) row.password_hash = await bcrypt.hash(String(b.password), 10)
+  if (!same || b.resetPassword) row.password_hash = await bcrypt.hash(String(d.identification), 10)
   const { data: u, error } = same
     ? await supabase.from('users').update(row).eq('id', same.id).select('id, username').single()
     : await supabase.from('users').insert(row).select('id, username').single()
   if (error) return error.code === '23505' ? fail(res, 'Ese nombre de usuario ya existe', 409) : fail(res, error)
   await supabase.from('drivers').update({ user_id: u.id }).eq('id', d.id)
   await audit(req, same ? 'editar' : 'crear', 'usuario_conductor', u.id, { driver: d.id })
-  res.send({ linked: 'conductor', username: u.username })
+  res.send({ linked: 'conductor', username: u.username, passwordReset: !same || Boolean(b.resetPassword) })
 }))
 
 router.delete('/conductores/:id/acceso', auth(ADMIN), h(async (req, res) => {
