@@ -18,6 +18,8 @@ const clean = (v) => (typeof v === 'string' ? (v.trim() === '' ? null : v.trim()
 const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i
 const PHONE_RE = /^[0-9]{7,10}$/
 const DOC_RE = /^[0-9A-Za-z-]{5,15}$/
+// Nombres y apellidos: letras (con tildes y ñ), espacios, apóstrofo, punto y guion.
+const NAME_RE = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ' .-]{2,60}$/
 
 // Imagen en base64 (data URL) con tamaño máximo: fotos de perfil y logos.
 const IMG_RE = /^data:image\/(png|jpe?g|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/
@@ -29,7 +31,7 @@ const imageError = (v, maxKb = 1500) => {
   return null
 }
 
-module.exports = { HttpError, fail, h, clean, EMAIL_RE, PHONE_RE, DOC_RE, imageError }
+module.exports = { HttpError, fail, h, clean, EMAIL_RE, PHONE_RE, DOC_RE, NAME_RE, imageError }
 
 // Fecha de hoy en Colombia (YYYY-MM-DD).
 const todayBogota = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date())

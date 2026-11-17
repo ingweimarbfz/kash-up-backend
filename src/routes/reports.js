@@ -33,7 +33,7 @@ const bucketOf = (desde, hasta) => (daysBetween(desde, hasta) > 62 ? (d) => d.sl
 const buckets = (desde, hasta) => { const f = bucketOf(desde, hasta); return [...new Set(days(desde, hasta).map(f))] }
 
 const lenders = async () => {
-  const { data } = await supabase.from('users').select('id, name, last_name, active').eq('role', 'prestamista').order('name')
+  const { data } = await supabase.from('users').select('id, name, last_name, active').eq('is_lender', true).order('name')
   return data || []
 }
 const lenderName = (all, id) => (id ? fullName(all.find((l) => l.id === id)) || '—' : 'Negocio')
@@ -304,7 +304,7 @@ router.get('/dashboard/sedes', auth(ADMIN), h(async (req, res) => {
   const month = `${today.slice(0, 8)}01`
   const [{ data: sites }, { data: users }, { data: bal }, { data: pays }, { data: cr }, { data: accs }] = await Promise.all([
     supabase.from('sites').select('id, name, city, own_capital').eq('active', true).order('id'),
-    supabase.from('users').select('id, site_id, active').eq('role', 'prestamista'),
+    supabase.from('users').select('id, site_id, active').eq('is_lender', true),
     supabase.from('credit_balances').select('lender_id, customer_id, balance, overdue_amount').eq('status', 'activo'),
     supabase.from('payments').select('lender_id, amount, paid_on').eq('status', 'aplicado').neq('kind', 'renovacion').gte('paid_on', month),
     supabase.from('credits').select('lender_id, principal').neq('status', 'anulado').gte('disbursement_date', month),

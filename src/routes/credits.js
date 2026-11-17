@@ -178,7 +178,7 @@ const createCredit = async (req, b, approval = null) => {
   const p = await prepare(req, b)
   let lenderId = resolveLender(req, b, p.customer)
   if (lenderId && req.user.role === 'administrador') {
-    const { data: l } = await supabase.from('users').select('id').eq('id', lenderId).eq('role', 'prestamista').eq('active', true).maybeSingle()
+    const { data: l } = await supabase.from('users').select('id').eq('id', lenderId).eq('is_lender', true).eq('active', true).maybeSingle()
     if (!l) throw new Bad('El prestamista seleccionado no existe o está inactivo')
   }
   const s = p.schedule

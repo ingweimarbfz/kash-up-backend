@@ -56,7 +56,7 @@ const MOVE_SELECT = 'id, type, amount, balance_after, ref, note, created_at, cre
 router.get('/capital', auth(ADMIN), h(async (req, res) => {
   const biz = await businessAccount(req.siteId)
   const [{ data: lenders, error }, { data: accounts }, { data: moves }, { data: bal }] = await Promise.all([
-    bySite(req, supabase.from('users').select('id, name, last_name, active, avatar_url').eq('role', 'prestamista').order('name'), 'id'),
+    bySite(req, supabase.from('users').select('id, name, last_name, active, avatar_url').eq('is_lender', true).order('name'), 'id'),
     supabase.from('fund_accounts').select('id, user_id, balance').eq('kind', 'prestamista'),
     supabase.from('fund_movements').select('account_id, type, amount').in('type', ['asignacion', 'devolucion_asignacion', 'desembolso', 'reverso_desembolso', 'recaudo']),
     supabase.from('credit_balances').select('lender_id, balance, overdue_amount').eq('status', 'activo')
