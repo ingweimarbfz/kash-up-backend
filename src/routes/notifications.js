@@ -129,7 +129,7 @@ router.post('/notificaciones/canales/:id/prueba', auth(ADMIN), h(async (req, res
   const { data: c } = await supabase.from('notification_channels').select('*').eq('id', Number(req.params.id)).maybeSingle()
   if (!c) return fail(res, 'Grupo no encontrado', 404)
   const site = c.site_id ? (await supabase.from('sites').select('name').eq('id', c.site_id).maybeSingle()).data?.name : null
-  const html = `✅ <b>KashUp conectado</b>\n━━━━━━━━━━━━━━━\nEste grupo recibirá: <b>${esc(SECTIONS[c.section].label)}</b>\n📍 ${esc(site || 'Todas las sedes')}\nℹ️ ${esc(SECTIONS[c.section].hint)}`
+  const html = `✅ <b>QuontUp360 conectado</b>\n━━━━━━━━━━━━━━━\nEste grupo recibirá: <b>${esc(SECTIONS[c.section].label)}</b>\n📍 ${esc(site || 'Todas las sedes')}\nℹ️ ${esc(SECTIONS[c.section].hint)}`
   let status = 'enviado'; let detail = null
   try { await tg(st.bot_token, 'sendMessage', { chat_id: c.chat_id, text: html, parse_mode: 'HTML' }) } catch (e) { status = 'error'; detail = e.message }
   await supabase.from('notification_log').insert({ section: c.section, chat_id: c.chat_id, site_id: c.site_id, status, detail })

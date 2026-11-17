@@ -43,7 +43,7 @@ const receipt = async (id) => {
   ])
   return {
     ...toDTO(p),
-    business: s?.business_name || 'KashUp', footer: s?.receipt_footer || null,
+    business: s?.business_name || 'QuontUp360', footer: s?.receipt_footer || null,
     installments: (alloc || []).map((a) => ({ number: a.installment?.number, dueDate: a.installment?.due_date, amount: Number(a.amount), waived: Number(a.waived) })).sort((x, y) => x.number - y.number),
     after: { balance: Number(b.balance), overdue: Number(b.overdue_amount), overdueCount: b.overdue_count, paidCount: b.paid_count, nextDueDate: b.next_due_date }
   }

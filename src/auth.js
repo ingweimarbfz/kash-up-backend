@@ -5,7 +5,7 @@ const { JWT_SECRET, SESSION_HOURS } = require('./config')
 const { fail } = require('./http')
 const { loadSite } = require('./site')
 
-// Roles de KashUp:
+// Roles de QuontUp360:
 // · administrador: dueño u operador del negocio; ve y configura todo.
 // · prestamista: cobrador/vendedor en campo; ve su ruta, sus clientes y sus cobros.
 // · cliente: deudor; consulta sus créditos, cuotas y pagos.
@@ -55,7 +55,7 @@ const auth = (roles = ALL) => async (req, res, next) => {
       .select(`${USER_COLUMNS}, org:organizations(id, status)`).eq('id', Number(payload.sub)).maybeSingle()
     if (error) throw error
     if (!user || !user.active) return fail(res, 'Usuario inactivo o inexistente', 401)
-    if (['suspendida', 'cancelada'].includes(user.org?.status)) return fail(res, 'El servicio de tu negocio está suspendido. Contacta a KashUp.', 401)
+    if (['suspendida', 'cancelada'].includes(user.org?.status)) return fail(res, 'El servicio de tu negocio está suspendido. Contacta a QuontUp360.', 401)
     if (!roles.includes(user.role)) return fail(res, 'No tienes permiso para esta acción', 403)
     req.user = user
     return tenant.runAsOrg(user.org_id, async () => {

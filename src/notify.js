@@ -50,7 +50,7 @@ const sendTo = async (token, chatId, html) => {
   }
 }
 const loadSettings = async () => (await supabase.from('notification_settings').select('*').maybeSingle()).data
-const withLink = (html, path) => (path && APP_URL() ? `${html}\n🔗 <a href="${APP_URL()}${path}">Abrir en KashUp</a>` : html)
+const withLink = (html, path) => (path && APP_URL() ? `${html}\n🔗 <a href="${APP_URL()}${path}">Abrir en QuontUp360</a>` : html)
 
 // Sede de un prestamista (para enviar al grupo de esa sede y a los de "todas las sedes").
 const siteOf = async (lenderId) => {

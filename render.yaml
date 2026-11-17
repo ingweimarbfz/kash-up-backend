@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: kash-up-backend
+    name: quontup360-backend
     runtime: node
     plan: free
     buildCommand: npm install

@@ -1,8 +1,8 @@
 {
-  "name": "kash-up-backend",
+  "name": "quontup360-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "API de KashUp: cobros, préstamos y crédito de productos (Express + Supabase, multi-cliente)",
+  "description": "API de QuontUp360: cobros, préstamos y crédito de productos (Express + Supabase, multi-cliente)",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
