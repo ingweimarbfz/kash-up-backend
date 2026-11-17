@@ -7,6 +7,7 @@
 const express = require('express')
 const supabase = require('../db')
 const { currentOrg } = require('../tenant')
+const plan = require('../plan')
 const { h, fail, clean, todayBogota, imageError, PHONE_RE } = require('../http')
 const { bySite } = require('../site')
 const bcrypt = require('bcryptjs')
@@ -328,6 +329,7 @@ router.get('/conductores', auth(STAFF), h(async (req, res) => {
 router.post('/conductores', auth(ADMIN), h(async (req, res) => {
   const { r, e } = driverRow(req.body || {})
   if (e.length) return fail(res, e.join('. '), 400)
+  await plan.checkLimit(currentOrg(), 'drivers')
   const { data, error } = await supabase.from('drivers').insert(r).select('*').single()
   if (error) return error.code === '23505' ? fail(res, 'Ya existe un conductor con ese documento', 400) : fail(res, error)
   await audit(req, 'crear', 'conductor', data.id, { identification: r.identification })

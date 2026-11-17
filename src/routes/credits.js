@@ -1,6 +1,7 @@
 const express = require('express')
 const supabase = require('../db')
 const { currentOrg } = require('../tenant')
+const plan = require('../plan')
 const { availableFor } = require('./funds')
 const { h, fail, clean, PHONE_RE, todayBogota } = require('../http')
 const { bySite } = require('../site')
@@ -172,6 +173,7 @@ const activeCredits = async (customerId) => {
 
 // Crea el crédito. Con `approval` se crea a partir de una solicitud aprobada por el administrador.
 const createCredit = async (req, b, approval = null) => {
+  if (b.kind === 'producto' && !plan.has(await plan.ensure(currentOrg()), 'productos')) throw new Bad('Tu plan no incluye créditos de productos')
   const refs = validRefs(b)
   const p = await prepare(req, b)
   let lenderId = resolveLender(req, b, p.customer)
