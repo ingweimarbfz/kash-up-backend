@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs')
 const supabase = require('../db')
 const tenant = require('../tenant')
 const { h, fail, clean, EMAIL_RE, PHONE_RE, imageError } = require('../http')
-const { auth, signToken, toUserDTO, USER_COLUMNS } = require('../auth')
+const { auth, signToken, toUserDTO, profilesOf, ROLE_LABELS, USER_COLUMNS } = require('../auth')
 const { audit } = require('../audit')
 
 const router = express.Router()
@@ -22,7 +22,7 @@ const registerFail = (key) => {
 }
 
 router.post('/login', h(async (req, res) => {
-  const { username, password } = req.body || {}
+  const { username, password, profile } = req.body || {}
   const key = String(clean(username) || '').toLowerCase()
   if (!key || !password) return fail(res, 'Usuario y contraseña requeridos', 400)
   if (tooMany(key)) return fail(res, 'Demasiados intentos. Espera unos minutos e intenta de nuevo.', 429)
@@ -37,12 +37,27 @@ router.post('/login', h(async (req, res) => {
   if (['suspendida', 'cancelada'].includes(user.org?.status)) return fail(res, 'El servicio de tu negocio está suspendido. Contacta a QuontUp360.', 403)
   attempts.delete(key)
 
+  // KU-031: con varios perfiles, elige con cuál entra. Sin perfil válido, se le pide que elija.
+  const profiles = profilesOf(user)
+  if (profiles.length > 1 && !profiles.includes(profile)) {
+    return res.send({ chooseProfile: true, profiles: profiles.map((r) => ({ role: r, label: ROLE_LABELS[r] })), name: user.name })
+  }
+  const role = profiles.length > 1 ? profile : user.role
+
   await tenant.runAsOrg(user.org_id, async () => {
     await supabase.from('users').update({ last_login_at: new Date().toISOString() }).eq('id', user.id)
     req.user = user
-    await audit(req, 'login', 'usuario', user.id)
+    await audit(req, 'login', 'usuario', user.id, role !== user.role ? { perfil: role } : undefined)
   })
-  res.send({ token: signToken(user), user: toUserDTO(user) })
+  res.send({ token: signToken(user, role), user: toUserDTO({ ...user, primary_role: user.role, role }) })
+}))
+
+// KU-031: cambiar de perfil sin cerrar sesión.
+router.post('/auth/perfil', auth(), h(async (req, res) => {
+  const role = req.body?.role
+  if (!profilesOf(req.user).includes(role)) return fail(res, 'No tienes ese perfil', 403)
+  await audit(req, 'cambio_perfil', 'usuario', req.user.id, { perfil: role })
+  res.send({ token: signToken(req.user, role), user: toUserDTO({ ...req.user, role }) })
 }))
 
 router.get('/auth/me', auth(), (req, res) => res.send(toUserDTO(req.user)))

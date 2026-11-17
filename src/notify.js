@@ -259,7 +259,7 @@ const groupsFor = async () => {
   return [...new Set((chans || []).map((c) => c.site_id ?? null))]
 }
 const lendersOf = async (siteId) => {
-  let q = supabase.from('users').select('id, name, last_name').eq('role', 'prestamista').eq('active', true).order('name')
+  let q = supabase.from('users').select('id, name, last_name').eq('is_lender', true).eq('active', true).order('name')
   if (siteId) q = q.eq('site_id', siteId)
   return (await q).data || []
 }

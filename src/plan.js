@@ -77,7 +77,7 @@ const usage = async () => {
   const count = async (table, f = (q) => q) => (await f(supabase.from(table).select('id', { count: 'exact', head: true }))).count || 0
   const role = (r) => count('users', (q) => q.eq('role', r).eq('active', true))
   const [sites, admins, lenders, drivers, clientUsers, customers] = await Promise.all([
-    count('sites', (q) => q.eq('active', true)), role('administrador'), role('prestamista'),
+    count('sites', (q) => q.eq('active', true)), role('administrador'), count('users', (q) => q.eq('is_lender', true).eq('active', true)),
     count('drivers', (q) => q.eq('active', true)), role('cliente'), count('customers', (q) => q.neq('status', 'inactivo'))
   ])
   return { sites, admins, lenders, drivers, client_users: clientUsers, customers }

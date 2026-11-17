@@ -224,3 +224,10 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 
 ## Datos de prueba
 `node scripts/demo-data.js [AAAA-MM-DD] > datos.sql` genera un SQL con sedes, ruteros, conductores, vehículos, clientes, créditos, pagos, gastos, cierres y promociones de las últimas dos semanas. Usa las mismas funciones de la base que la app, así que las cajas y el inventario quedan cuadrados. Las contraseñas son el documento de cada persona.
+
+## KU-031 · Usuarios con varios perfiles
+- Un usuario puede entrar como administrador, prestamista y/o conductor con el mismo usuario y contraseña. `users.role` es el perfil principal (administrador > prestamista > conductor) y `users.extra_roles` los adicionales. `users.is_lender` marca a quien cobra, sea principal o adicional, y es lo que usan las listas y validaciones de prestamistas (también las funciones de la base).
+- `POST /login` con varios perfiles y sin `profile` responde `{ chooseProfile, profiles }`; con `profile` entrega el token de ese perfil. `POST /auth/perfil { role }` cambia de perfil sin cerrar sesión. El token lleva el perfil activo y `auth()` lo aplica a `req.user.role` si el usuario todavía lo tiene.
+- `POST/PUT /usuarios` reciben `profiles` (lista) y, si incluye conductor, `driver` con la licencia (número, categoría, vencimiento, foto). Se crea o se reutiliza su ficha en Conductores (por documento) y se enlaza al usuario. Quitar el perfil de conductor desenlaza la ficha.
+- Nombres y apellidos solo admiten letras (`NAME_RE`).
+- Migración `20261117000023_usuarios_varios_perfiles.sql`: columnas, restricción, índice, funciones con `is_lender` y perfil de conductor para quien ya estaba enlazado a una ficha.

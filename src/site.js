@@ -9,7 +9,7 @@ const loadSite = async (req) => {
   if (req.user.role !== 'administrador') return
   const id = Number(req.query?.sede)
   if (!id) return
-  const { data } = await supabase.from('users').select('id').eq('role', 'prestamista').eq('site_id', id)
+  const { data } = await supabase.from('users').select('id').eq('is_lender', true).eq('site_id', id)
   req.siteId = id
   req.siteLenders = (data || []).map((u) => u.id)
   if (!req.siteLenders.length) req.siteLenders = [0]
