@@ -68,7 +68,7 @@ router.get('/bitacora', auth(ADMIN), h(async (req, res) => {
   const desde = ISO.test(req.query.desde || '') ? req.query.desde : today
   const hasta = ISO.test(req.query.hasta || '') ? req.query.hasta : today
   // Prestamistas del alcance (sede seleccionada o uno en particular).
-  let lq = supabase.from('users').select('id, name, last_name, site_id').eq('role', 'prestamista').order('name')
+  let lq = supabase.from('users').select('id, name, last_name, site_id').eq('is_lender', true).order('name')
   if (req.siteId) lq = lq.eq('site_id', req.siteId)
   const { data: lenders } = await lq
   const wanted = Number(req.query.prestamista) || null

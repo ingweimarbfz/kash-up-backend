@@ -113,7 +113,7 @@ const rowFrom = (b) => {
 // Valida que el prestamista asignado exista y tenga ese rol.
 const checkLender = async (id) => {
   if (!id) return null
-  const { data } = await supabase.from('users').select('id').eq('id', Number(id)).eq('role', 'prestamista').eq('active', true).maybeSingle()
+  const { data } = await supabase.from('users').select('id').eq('id', Number(id)).eq('is_lender', true).eq('active', true).maybeSingle()
   return data ? data.id : undefined
 }
 
@@ -146,7 +146,7 @@ router.get('/clientes', auth(STAFF), h(async (req, res) => {
 
 // Prestamistas activos (para asignar clientes y créditos).
 router.get('/prestamistas', auth(STAFF), h(async (req, res) => {
-  const { data, error } = await bySite(req, supabase.from('users').select('id, name, last_name, site_id').eq('role', 'prestamista').eq('active', true).order('name'), 'id')
+  const { data, error } = await bySite(req, supabase.from('users').select('id, name, last_name, site_id').eq('is_lender', true).eq('active', true).order('name'), 'id')
   if (error) throw error
   res.send(data.map((u) => ({ id: u.id, fullName: fullName(u), siteId: u.site_id })))
 }))

@@ -37,7 +37,7 @@ const siteDTO = (s, extra = {}) => ({ id: s.id, name: s.name, city: s.city, addr
 router.get('/sedes', auth(STAFF), h(async (req, res) => {
   let q = supabase.from('sites').select('*').order('id')
   if (req.query.activas === '1') q = q.eq('active', true)
-  const [{ data, error }, { data: lenders }] = await Promise.all([q, supabase.from('users').select('id, name, last_name, site_id, active').eq('role', 'prestamista')])
+  const [{ data, error }, { data: lenders }] = await Promise.all([q, supabase.from('users').select('id, name, last_name, site_id, active').eq('is_lender', true)])
   if (error) throw error
   // Ruteros de cada sede.
   res.send(data.map((s) => siteDTO(s, { lenders: (lenders || []).filter((u) => u.site_id === s.id).map((u) => ({ id: u.id, fullName: `${u.name} ${u.last_name || ''}`.trim(), active: u.active })) })))
@@ -84,8 +84,8 @@ router.put('/sedes/:id/ruteros', auth(ADMIN), h(async (req, res) => {
   const ids = (Array.isArray(req.body?.lenderIds) ? req.body.lenderIds : []).map(Number).filter(Boolean)
   const { data: site } = await supabase.from('sites').select('id, name').eq('id', id).maybeSingle()
   if (!site) return fail(res, 'Sede no encontrada', 404)
-  await supabase.from('users').update({ site_id: null }).eq('site_id', id).eq('role', 'prestamista')
-  if (ids.length) await supabase.from('users').update({ site_id: id }).in('id', ids).eq('role', 'prestamista')
+  await supabase.from('users').update({ site_id: null }).eq('site_id', id).eq('is_lender', true)
+  if (ids.length) await supabase.from('users').update({ site_id: id }).in('id', ids).eq('is_lender', true)
   await audit(req, 'asignar_ruteros', 'sede', id, { lenders: ids })
   res.send({ ok: true })
 }))

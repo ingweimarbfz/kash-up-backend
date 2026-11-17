@@ -111,7 +111,7 @@ router.put('/ruta/orden', auth(STAFF), h(async (req, res) => {
 // Resumen de todas las rutas (administrador).
 router.get('/rutas', auth(ADMIN), h(async (req, res) => {
   const day = dayParam(req.query.fecha)
-  const { data: lenders } = await bySite(req, supabase.from('users').select('id, name, last_name').eq('role', 'prestamista').eq('active', true).order('name'), 'id')
+  const { data: lenders } = await bySite(req, supabase.from('users').select('id, name, last_name').eq('is_lender', true).eq('active', true).order('name'), 'id')
   const { data: closures } = await supabase.from('route_closures').select('lender_id, difference, counted_cash').eq('day', day)
   const rows = await Promise.all((lenders || []).map(async (l) => {
     const [route, { data: s }] = await Promise.all([buildRoute(l.id, day), supabase.rpc('day_summary', { p_org: currentOrg(), p_lender: l.id, p_day: day })])
@@ -266,7 +266,7 @@ router.post('/gastos', auth(STAFF), h(async (req, res) => {
   if (imgErr) return fail(res, `Soporte: ${imgErr}`, 400)
   let lenderId = req.user.role === 'prestamista' ? req.user.id : (Number(b.lenderId) || null)
   if (lenderId && req.user.role === 'administrador') {
-    const { data: l } = await supabase.from('users').select('id').eq('id', lenderId).eq('role', 'prestamista').maybeSingle()
+    const { data: l } = await supabase.from('users').select('id').eq('id', lenderId).eq('is_lender', true).maybeSingle()
     if (!l) return fail(res, 'Prestamista no válido', 400)
   }
   const { data: id, error } = await supabase.rpc('register_expense', {

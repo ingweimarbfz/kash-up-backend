@@ -181,7 +181,7 @@ const checkDriver = async (id) => {
 }
 const checkCollector = async (id) => {
   if (!id) return true
-  const { data } = await supabase.from('users').select('id').eq('id', id).eq('role', 'prestamista').maybeSingle()
+  const { data } = await supabase.from('users').select('id').eq('id', id).eq('is_lender', true).maybeSingle()
   return Boolean(data)
 }
 const dupMsg = (error) => (error?.code === '23505' ? (String(error.message).includes('plate') ? 'Ya existe un vehículo con esa placa' : 'Ya existe un vehículo con ese número interno') : null)
@@ -300,7 +300,9 @@ const driverRow = (b) => {
   if (!r.name) e.push('El nombre es obligatorio')
   if (!r.identification || !/^[0-9A-Za-z.-]{5,15}$/.test(r.identification)) e.push('Número de documento no válido')
   if (!r.phone || !PHONE_RE.test(r.phone)) e.push('Celular no válido')
+  if (r.license_number) r.license_number = r.license_number.toUpperCase()
   if (!r.license_number) e.push('El número de la licencia es obligatorio')
+  else if (!/^[A-Z0-9]{3,20}$/.test(r.license_number)) e.push('El número de la licencia solo admite letras y números (3 a 20), sin espacios ni caracteres especiales')
   if (!LICENSE_CATS.includes(r.license_category)) e.push('Elige la categoría de la licencia')
   if (!ISO.test(r.license_expires || '')) e.push('La fecha de vencimiento de la licencia es obligatoria')
   for (const k of ['licensePhotoUrl', 'photoUrl', 'idPhotoUrl', 'idPhotoBackUrl']) if (b[k] && imageError(b[k])) e.push(imageError(b[k]))
@@ -317,11 +319,11 @@ router.get('/conductores', auth(STAFF), h(async (req, res) => {
   let q = supabase.from('drivers').select('*').order('name')
   if (req.query.activos) q = q.eq('active', true)
   const [{ data, error }, { data: veh }, { data: users }] = await Promise.all([q, supabase.from('vehicles').select('id, code, plate, driver_id').not('driver_id', 'is', null),
-    supabase.from('users').select('id, username, role, active, identification').in('role', ['conductor', 'prestamista'])])
+    supabase.from('users').select('id, username, role, is_lender, active, identification').in('role', ['conductor', 'prestamista', 'administrador'])])
   if (error) throw error
   res.send(data.map((d) => {
     const u = (users || []).find((x) => x.id === d.user_id)
-    const lender = (users || []).find((x) => x.role === 'prestamista' && x.identification === d.identification)
+    const lender = (users || []).find((x) => x.is_lender && x.identification === d.identification)
     return { ...fullDriver(d, veh || []), access: u ? { userId: u.id, username: u.username, role: u.role, active: u.active } : null, isLender: Boolean(lender) }
   }))
 }))
@@ -379,11 +381,14 @@ router.post('/conductores/:id/acceso', auth(ADMIN), h(async (req, res) => {
   const { data: d } = await supabase.from('drivers').select('*').eq('id', Number(req.params.id)).maybeSingle()
   if (!d) return fail(res, 'Conductor no encontrado', 404)
   if (!d.active) return fail(res, 'Activa el conductor antes de darle acceso', 400)
-  const { data: same } = await supabase.from('users').select('id, role, username, active').eq('identification', d.identification).maybeSingle()
-  if (same && same.role === 'prestamista') {
+  const { data: same } = await supabase.from('users').select('id, role, extra_roles, username, active').eq('identification', d.identification).maybeSingle()
+  // KU-031: si ya es prestamista o administrador, se le agrega el perfil de conductor y elige con cuál entrar.
+  if (same && ['prestamista', 'administrador'].includes(same.role)) {
+    const extra = [...new Set([...(same.extra_roles || []), 'conductor'])]
+    await supabase.from('users').update({ extra_roles: extra }).eq('id', same.id)
     await supabase.from('drivers').update({ user_id: same.id }).eq('id', d.id)
     await audit(req, 'enlazar_prestamista', 'conductor', d.id, { user: same.id })
-    return res.send({ linked: 'prestamista', username: same.username, message: 'Es prestamista: entra con su usuario y ve el vehículo en "Mi vehículo".' })
+    return res.send({ linked: 'prestamista', username: same.username, message: 'Ya tiene usuario: entra con el mismo usuario y elige el perfil de conductor al iniciar sesión.' })
   }
   if (same && same.role !== 'conductor') return fail(res, `Ese documento ya es de un usuario con rol ${same.role}`, 400)
   const username = clean(b.username)?.toLowerCase()
@@ -403,8 +408,9 @@ router.post('/conductores/:id/acceso', auth(ADMIN), h(async (req, res) => {
 router.delete('/conductores/:id/acceso', auth(ADMIN), h(async (req, res) => {
   const { data: d } = await supabase.from('drivers').select('id, user_id').eq('id', Number(req.params.id)).maybeSingle()
   if (!d?.user_id) return fail(res, 'Este conductor no tiene acceso', 404)
-  const { data: u } = await supabase.from('users').select('id, role').eq('id', d.user_id).maybeSingle()
+  const { data: u } = await supabase.from('users').select('id, role, extra_roles').eq('id', d.user_id).maybeSingle()
   if (u?.role === 'conductor') await supabase.from('users').update({ active: false }).eq('id', u.id)
+  else if (u) await supabase.from('users').update({ extra_roles: (u.extra_roles || []).filter((r) => r !== 'conductor') }).eq('id', u.id)
   await supabase.from('drivers').update({ user_id: null }).eq('id', d.id)
   await audit(req, 'quitar_acceso', 'conductor', d.id)
   res.status(204).end()
@@ -412,3 +418,5 @@ router.delete('/conductores/:id/acceso', auth(ADMIN), h(async (req, res) => {
 
 module.exports = router
 module.exports.alertsOf = alertsOf
+module.exports.driverRow = driverRow
+module.exports.LICENSE_CATS = LICENSE_CATS
