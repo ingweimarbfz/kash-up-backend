@@ -1,6 +1,6 @@
 // =====================================================================
 // Plataforma de planes (KU-026)
-// · /plataforma/*: panel de KashUp para administrar países, planes, precios por país, negocios y solicitudes.
+// · /plataforma/*: panel de QuontUp360 para administrar países, planes, precios por país, negocios y solicitudes.
 //   Entra un usuario con users.platform_admin; su token lleva plt:true y no sirve para la app.
 // · /publico/*: precios para los sitios web (sin sesión).
 // · /plan/*: "Mi plan" dentro de la app del negocio (uso, límites y solicitud de cambio).
@@ -111,7 +111,7 @@ const pauth = async (req, res, next) => {
     if (!token) return fail(res, 'Inicia sesión en la plataforma', 401)
     let payload
     try { payload = jwt.verify(token, JWT_SECRET) } catch { return fail(res, 'Tu sesión expiró. Inicia sesión de nuevo.', 401) }
-    if (!payload.plt) return fail(res, 'Este acceso es solo para la plataforma de KashUp', 403)
+    if (!payload.plt) return fail(res, 'Este acceso es solo para la plataforma de QuontUp360', 403)
     const { data: u } = await supabase.from('users').select('id, org_id, name, last_name, username, email, active, platform_admin').eq('id', Number(payload.sub)).maybeSingle()
     if (!u || !u.active || !u.platform_admin) return fail(res, 'Sin acceso a la plataforma', 403)
     req.user = u
@@ -312,7 +312,7 @@ router.post('/plataforma/organizaciones', pauth, h(async (req, res) => {
   if (errs.length) return fail(res, errs.join('. '), 400)
   const username = clean(a.username).toLowerCase()
   const { data: taken } = await supabase.from('users').select('id').eq('username', username).maybeSingle()
-  if (taken) return fail(res, 'Ese usuario ya existe en KashUp; elige otro', 409)
+  if (taken) return fail(res, 'Ese usuario ya existe en QuontUp360; elige otro', 409)
   if (!row.start_date) row.start_date = new Date().toISOString().slice(0, 10)
   if (!row.renewal_date) {
     const d = new Date(`${row.start_date}T12:00:00Z`)
@@ -506,7 +506,7 @@ router.post('/plan/solicitud', auth(ADMIN), h(async (req, res) => {
   if (!target || !target.active) return fail(res, 'Selecciona un plan disponible', 400)
   if (clean(b.phone) && !PHONE_RE.test(clean(b.phone))) return fail(res, 'Teléfono no válido (7 a 10 dígitos)', 400)
   const { data: open } = await supabase.from('plan_requests').select('id').eq('org_id', org).in('status', ['pendiente', 'contactado']).limit(1).maybeSingle()
-  if (open) return fail(res, 'Ya tienes una solicitud en curso. KashUp te contactará pronto.', 409)
+  if (open) return fail(res, 'Ya tienes una solicitud en curso. QuontUp360 te contactará pronto.', 409)
   const data = must(await supabase.from('plan_requests').insert({
     org_id: org,
     from_plan_id: st.plan?.id || null,

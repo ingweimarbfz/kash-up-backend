@@ -1,5 +1,5 @@
 // =====================================================================
-// Motor de cálculo de créditos de KashUp.
+// Motor de cálculo de créditos de QuontUp360.
 // Calcula el plan de cuotas (fechas, capital, interés y valor) para las tres modalidades de interés:
 //
 // · fija         Interés plano sobre el capital inicial. Interés total = capital × tasa × meses de plazo

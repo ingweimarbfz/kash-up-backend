@@ -1,6 +1,6 @@
-# KashUp · Backend
+# QuontUp360 · Backend
 
-API de KashUp (cobros, préstamos y crédito de productos). Express + Supabase, multi-cliente por `org_id`.
+API de QuontUp360 (cobros, préstamos y crédito de productos). Express + Supabase, multi-cliente por `org_id`.
 
 ## Arranque local
 ```bash
@@ -8,7 +8,7 @@ cp .env.example .env   # completar SUPABASE_SECRET_KEY y JWT_SECRET
 npm install
 npm run dev            # http://localhost:4000
 ```
-La clave secreta está en Supabase → Project Settings → API Keys (proyecto `kash-up`).
+La clave secreta está en Supabase → Project Settings → API Keys (proyecto `quontup360`, antes `kash-up`; la referencia del proyecto no cambia).
 
 ## Estructura
 ```
@@ -21,7 +21,7 @@ src/
   audit.js        registro de auditoría
   http.js         errores, validaciones y utilidades
   routes/         auth, usuarios, configuración, dashboard, auditoría
-supabase/migrations/   esquema de la base (aplicado en el proyecto kash-up)
+supabase/migrations/   esquema de la base (aplicado en el proyecto quontup360)
 scripts/seed.js        crea un negocio nuevo con su administrador
 ```
 
@@ -175,7 +175,7 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 - Un grupo de sede solo recibe los avisos de los ruteros de esa sede; un grupo de "todas las sedes" recibe todo.
 - Resúmenes: agenda de la mañana y resumen del cierre a la hora configurada (revisión cada 10 minutos, hora de Colombia), uno por sede y uno general.
 - Rutas: `GET/PUT/DELETE /notificaciones/bot`, `GET /notificaciones`, `POST /notificaciones/buscar-grupos`, `POST|PUT|DELETE /notificaciones/canales`, `POST /notificaciones/canales/:id/prueba`, `POST /notificaciones/resumen/manana|cierre`, `GET /mis-notificaciones`, `POST /mis-notificaciones/:id/unirme` (enlace personal de 24 horas).
-- `PUBLIC_APP_URL` (opcional): enlace "Abrir en KashUp" en cada aviso. Si no está, se usa el primer `CORS_ORIGIN` con https.
+- `PUBLIC_APP_URL` (opcional): enlace "Abrir en QuontUp360" en cada aviso. Si no está, se usa el primer `CORS_ORIGIN` con https.
 
 ## KU-020 · Galería de productos y promociones
 

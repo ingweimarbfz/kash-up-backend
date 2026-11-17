@@ -13,7 +13,7 @@ const { buildSchedule, toISO, parseISO } = require('../src/lib/schedule')
 
 const [todayArg] = process.argv.slice(2)
 const hash = (doc) => bcrypt.hashSync(String(doc), 10)
-const face = (k) => `https://i.pravatar.cc/400?u=kashup-${k}`
+const face = (k) => `https://i.pravatar.cc/400?u=quontup360-${k}`
 const docImg = (k, side) => `https://placehold.co/900x570/e2e8f0/334155.png?text=Documento+${side}+${encodeURIComponent(k)}`
 const photos = (k) => `'${face(k)}', '${face(k)}', '${docImg(k, 'frente')}', '${docImg(k, 'reverso')}'`
 const TODAY = todayArg || new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date())
@@ -64,7 +64,7 @@ const CENTER = { med: [6.2476, -75.5658], cal: [3.4516, -76.532], 2: [4.7110, -7
 const BUSINESS = ['Tienda', 'Peluquería', 'Venta de arepas', 'Miscelánea', 'Taller de motos', 'Frutería', 'Panadería', 'Modistería', 'Venta de minutos', 'Ferretería']
 
 const sqlHeader = () => {
-  sql(`-- Datos de prueba de KashUp (generado el ${TODAY}). Se ejecuta una sola vez en el SQL Editor de Supabase.`)
+  sql(`-- Datos de prueba de QuontUp360 (generado el ${TODAY}). Se ejecuta una sola vez en el SQL Editor de Supabase.`)
   sql('begin;')
   sql(`do $$ begin if exists (select 1 from public.users where username = 'carlos.perez') then raise exception 'Los datos de prueba ya están cargados'; end if; end $$;`)
   sql('set local search_path = public;')
@@ -126,8 +126,8 @@ const build = async () => {
 
   // Productos: fotos, galería, productos nuevos y existencias por bodega.
   sql('-- Productos, galería y existencias')
-  const img = (s) => `https://picsum.photos/seed/kashup-${s}/800/800`
-  sql(`update products set photo_url = coalesce(photo_url, 'https://picsum.photos/seed/kashup-p' || id || '/800/800'), gallery = array['https://picsum.photos/seed/kashup-p' || id || 'a/800/800', 'https://picsum.photos/seed/kashup-p' || id || 'b/800/800'], description = coalesce(description, 'Producto de muestra para probar la ficha, la galería y las promociones.') where org_id = 1;`)
+  const img = (s) => `https://picsum.photos/seed/quontup360-${s}/800/800`
+  sql(`update products set photo_url = coalesce(photo_url, 'https://picsum.photos/seed/quontup360-p' || id || '/800/800'), gallery = array['https://picsum.photos/seed/quontup360-p' || id || 'a/800/800', 'https://picsum.photos/seed/quontup360-p' || id || 'b/800/800'], description = coalesce(description, 'Producto de muestra para probar la ficha, la galería y las promociones.') where org_id = 1;`)
   const NEWP = [
     { k: 'lav', sku: 'LAV-16', name: 'Lavadora 16 kg', cat: 1, brand: 'LG', cost: 1150000, price: 1590000, desc: 'Lavadora de carga superior, 16 kg, 8 programas.' },
     { k: 'red', sku: 'CEL-RN13', name: 'Celular Redmi Note 13', cat: 2, brand: 'Xiaomi', cost: 640000, price: 899000, desc: '256 GB, cámara de 108 MP, batería de 5000 mAh.' },
