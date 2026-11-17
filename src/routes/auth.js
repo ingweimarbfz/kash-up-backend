@@ -64,6 +64,7 @@ router.put('/perfil', auth(), h(async (req, res) => {
     if (err) return fail(res, err, 400)
     patch.avatar_url = clean(b.avatarUrl)
   }
+  if (b.newPassword && req.user.role === 'cliente') return fail(res, 'Como cliente, tu contraseña es siempre tu número de documento', 400)
   if (b.newPassword) {
     if (String(b.newPassword).length < 8) return fail(res, 'La nueva contraseña debe tener al menos 8 caracteres', 400)
     const { data: cur } = await supabase.from('users').select('password_hash').eq('id', req.user.id).single()

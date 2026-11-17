@@ -202,3 +202,11 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 - El detalle (valor, recibo, cliente, ubicación) se consulta al momento a partir del registro original, así que la bitácora no duplica datos.
 - Alertas: faltante o sobrante en el cierre, pagos o gastos anulados, pagos antes de las 5 a. m. o desde las 9 p. m., pagos en efectivo sin ubicación y gastos de $ 150.000 o más.
 - Resumen por prestamista: cobrado, gastos, prestado, primera y última actividad, faltantes y número de alertas.
+
+## KU-024 · Contraseñas por documento y fotos de usuarios
+- Todo usuario nuevo (y el acceso de un conductor) entra la primera vez con su número de documento como contraseña y luego la cambia en "Mi perfil". El administrador puede volverla al documento.
+- El cliente siempre entra con su número de documento: no puede cambiarla y, si se corrige su documento en la ficha, la contraseña cambia con él.
+- Usuarios y conductores guardan foto de la persona y del documento por ambas caras (migración `20261116000019_usuarios_fotos_documento.sql`). Son obligatorias al crear y al editar si faltan (al cliente se le toman en su ficha).
+
+## Datos de prueba
+`node scripts/demo-data.js [AAAA-MM-DD] > datos.sql` genera un SQL con sedes, ruteros, conductores, vehículos, clientes, créditos, pagos, gastos, cierres y promociones de las últimas dos semanas. Usa las mismas funciones de la base que la app, así que las cajas y el inventario quedan cuadrados. Las contraseñas son el documento de cada persona.

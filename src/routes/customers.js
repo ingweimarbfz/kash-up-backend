@@ -211,6 +211,10 @@ router.put('/clientes/:id', auth(STAFF), h(async (req, res) => {
   }
   const { error } = await supabase.from('customers').update(patch).eq('id', id)
   if (error) return dupMessage(error) ? fail(res, dupMessage(error), 409) : fail(res, error)
+  // KU-024: si cambió el documento, el usuario del cliente se actualiza y su contraseña vuelve a ser el documento.
+  if (current.user_id && patch.identification && patch.identification !== current.identification) {
+    await supabase.from('users').update({ identification: patch.identification, password_hash: await bcrypt.hash(String(patch.identification), 10) }).eq('id', current.user_id)
+  }
   await audit(req, 'editar', 'cliente', id)
   res.send(toDTO(await loadOne(req, id)))
 }))
@@ -261,14 +265,12 @@ router.post('/clientes/:id/usuario', auth(ADMIN), h(async (req, res) => {
   const c = await loadOne(req, id)
   if (!c) return fail(res, 'Cliente no encontrado', 404)
   const username = String(clean(req.body?.username) || '').toLowerCase()
-  const password = req.body?.password || ''
   if (!/^[a-z0-9._-]{3,30}$/.test(username)) return fail(res, 'Usuario inválido (3 a 30: letras, números, punto, guion)', 400)
-  if (!c.user_id && password.length < 8) return fail(res, 'La contraseña debe tener al menos 8 caracteres', 400)
-  if (c.user_id && password && password.length < 8) return fail(res, 'La contraseña debe tener al menos 8 caracteres', 400)
+  // KU-024: el cliente siempre entra con su número de documento como contraseña.
+  const password = String(c.identification)
   let user
   if (c.user_id) {
-    const patch = { username, active: req.body?.active !== false }
-    if (password) patch.password_hash = await bcrypt.hash(password, 10)
+    const patch = { username, identification: c.identification, active: req.body?.active !== false, password_hash: await bcrypt.hash(password, 10) }
     const { data, error } = await supabase.from('users').update(patch).eq('id', c.user_id).select(USER_COLUMNS).single()
     if (error) return error.code === '23505' ? fail(res, 'Ese nombre de usuario ya existe', 409) : fail(res, error)
     user = data
