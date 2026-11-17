@@ -4,6 +4,8 @@ const supabase = require('../db')
 const { h, fail, clean, EMAIL_RE, PHONE_RE, DOC_RE, imageError } = require('../http')
 const { auth, ADMIN, ROLES, USER_COLUMNS, toUserDTO } = require('../auth')
 const { audit } = require('../audit')
+const { currentOrg } = require('../tenant')
+const plan = require('../plan')
 
 const router = express.Router()
 
@@ -75,6 +77,7 @@ router.post('/usuarios', auth(ADMIN), h(async (req, res) => {
   const missing = missingPhotos(b)
   if (missing.length) errors.push(`Falta ${missing.join(', ')}`)
   if (errors.length) return fail(res, errors.join('. '), 400)
+  if (plan.roleLimit[b.role] && b.active !== false) await plan.checkLimit(currentOrg(), plan.roleLimit[b.role])
   const { data, error } = await supabase.from('users').insert({
     identification: clean(b.identification),
     name: clean(b.name),
@@ -103,6 +106,8 @@ router.put('/usuarios/:id', auth(ADMIN), h(async (req, res) => {
   if (!current) return fail(res, 'Usuario no encontrado', 404)
   const missing = missingPhotos(b, current)
   if (missing.length) return fail(res, `Falta ${missing.join(', ')}`, 400)
+  // Reactivar o cambiar de rol cuenta contra el límite del plan.
+  if (plan.roleLimit[b.role] && b.active !== false && (!current.active || current.role !== b.role)) await plan.checkLimit(currentOrg(), plan.roleLimit[b.role])
   // Siempre debe quedar al menos un administrador activo.
   const losesAdmin = current.role === 'administrador' && current.active && (b.role !== 'administrador' || b.active === false)
   if (losesAdmin && (await activeAdmins(id)) === 0) return fail(res, 'Debe quedar al menos un administrador activo', 400)

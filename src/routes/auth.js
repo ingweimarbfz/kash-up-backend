@@ -34,7 +34,7 @@ router.post('/login', h(async (req, res) => {
   const ok = user && (await bcrypt.compare(password, user.password_hash))
   if (!ok) { registerFail(key); return fail(res, 'Usuario o contraseña incorrectos.', 401) }
   if (!user.active) return fail(res, 'Tu usuario está inactivo. Contacta al administrador.', 403)
-  if (user.org?.status === 'suspendida') return fail(res, 'El servicio de tu negocio está suspendido. Contacta a KashUp.', 403)
+  if (['suspendida', 'cancelada'].includes(user.org?.status)) return fail(res, 'El servicio de tu negocio está suspendido. Contacta a KashUp.', 403)
   attempts.delete(key)
 
   await tenant.runAsOrg(user.org_id, async () => {

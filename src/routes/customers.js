@@ -6,6 +6,7 @@ const { auth, ADMIN, STAFF, toUserDTO, USER_COLUMNS } = require('../auth')
 const { audit } = require('../audit')
 const { score } = require('../lib/scoring')
 const { currentOrg } = require('../tenant')
+const plan = require('../plan')
 const { bySite } = require('../site')
 
 const router = express.Router()
@@ -178,6 +179,7 @@ router.post('/clientes', auth(STAFF), h(async (req, res) => {
   const b = req.body || {}
   const errors = validate(b, true)
   if (errors.length) return fail(res, errors.join('. '), 400)
+  await plan.checkLimit(currentOrg(), 'customers')
   let lenderId = req.user.role === 'prestamista' ? req.user.id : await checkLender(b.lenderId)
   if (lenderId === undefined) return fail(res, 'El prestamista asignado no existe o está inactivo', 400)
   const row = { ...rowFrom(b), utility_bill_at: new Date().toISOString(), lender_id: lenderId, created_by: req.user.id }
@@ -266,6 +268,7 @@ router.post('/clientes/:id/usuario', auth(ADMIN), h(async (req, res) => {
   if (!c) return fail(res, 'Cliente no encontrado', 404)
   const username = String(clean(req.body?.username) || '').toLowerCase()
   if (!/^[a-z0-9._-]{3,30}$/.test(username)) return fail(res, 'Usuario inválido (3 a 30: letras, números, punto, guion)', 400)
+  if (!c.user_id) await plan.checkLimit(currentOrg(), 'client_users')
   // KU-024: el cliente siempre entra con su número de documento como contraseña.
   const password = String(c.identification)
   let user

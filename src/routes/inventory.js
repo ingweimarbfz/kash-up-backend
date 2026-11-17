@@ -5,6 +5,7 @@ const { bestFor, promoBrief, loadActive, statusOf, priceWith, hm, covers } = req
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
 const { currentOrg } = require('../tenant')
+const plan = require('../plan')
 
 const router = express.Router()
 
@@ -49,6 +50,7 @@ const siteRow = (b) => {
 router.post('/sedes', auth(ADMIN), h(async (req, res) => {
   const b = req.body || {}
   if (!clean(b.name)) return fail(res, 'El nombre de la sede es requerido', 400)
+  await plan.checkLimit(currentOrg(), 'sites')
   const { data, error } = await supabase.from('sites').insert(siteRow(b)).select('*').single()
   if (error) return error.code === '23505' ? fail(res, 'Ya existe una sede con ese nombre', 409) : fail(res, error)
   // Cada sede nueva arranca con su propia bodega.

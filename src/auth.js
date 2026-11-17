@@ -55,11 +55,16 @@ const auth = (roles = ALL) => async (req, res, next) => {
       .select(`${USER_COLUMNS}, org:organizations(id, status)`).eq('id', Number(payload.sub)).maybeSingle()
     if (error) throw error
     if (!user || !user.active) return fail(res, 'Usuario inactivo o inexistente', 401)
-    if (user.org?.status === 'suspendida') return fail(res, 'El servicio de tu negocio está suspendido. Contacta a KashUp.', 401)
+    if (['suspendida', 'cancelada'].includes(user.org?.status)) return fail(res, 'El servicio de tu negocio está suspendido. Contacta a KashUp.', 401)
     if (!roles.includes(user.role)) return fail(res, 'No tienes permiso para esta acción', 403)
     req.user = user
     return tenant.runAsOrg(user.org_id, async () => {
-      try { await loadSite(req) } catch (e) { return fail(res, e) }
+      try {
+        // KU-026: la ruta debe estar incluida en el plan del negocio.
+        const blocked = await require('./plan').blockedFor(user.org_id, req.originalUrl.split('?')[0])
+        if (blocked) return fail(res, blocked, 403)
+        await loadSite(req)
+      } catch (e) { return fail(res, e) }
       return next()
     })
   } catch (e) {

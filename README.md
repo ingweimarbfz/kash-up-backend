@@ -208,5 +208,13 @@ Periodicidad diaria, semanal, quincenal, mensual o cada N días, con opción de 
 - El cliente siempre entra con su número de documento: no puede cambiarla y, si se corrige su documento en la ficha, la contraseña cambia con él.
 - Usuarios y conductores guardan foto de la persona y del documento por ambas caras (migración `20261116000019_usuarios_fotos_documento.sql`). Son obligatorias al crear y al editar si faltan (al cliente se le toman en su ficha).
 
+## KU-026 · Planes por país y plataforma
+
+- Migración `20261117000020_planes_paises.sql`: países (Panamá y Suramérica sin Surinam ni las Guayanas) con su moneda, funcionalidades, planes con límites, precio mensual de cada plan por país, datos comerciales del negocio y solicitudes de cambio de plan.
+- `src/plan.js` decide qué puede usar cada negocio: cada ruta de la API pertenece a una funcionalidad (`FEATURE_ROUTES`) y `auth()` responde 403 si el plan no la incluye. Los límites (sedes, administradores, prestamistas, conductores, clientes con usuario y clientes) se revisan al crear o reactivar. Un negocio sin plan no tiene restricciones.
+- Plataforma (`/plataforma/*`): entra un usuario con `users.platform_admin = true` (en la base de prueba, `admin`). Su token solo sirve para la plataforma. Administra países y monedas, funcionalidades, planes con precios por país, negocios (al crearlo se crea su primer administrador con contraseña igual a su documento) y solicitudes; el resumen muestra el ingreso mensual por moneda.
+- Público (sin sesión): `GET /publico/precios?pais=PE` para la página de precios y `GET /publico/catalogo` (todos los países) para el sitio web al compilar.
+- En la app: `GET /plan/modulos` (para el menú), `GET /plan/actual` y `GET /plan/opciones` (Mi plan) y `POST /plan/solicitud`.
+
 ## Datos de prueba
 `node scripts/demo-data.js [AAAA-MM-DD] > datos.sql` genera un SQL con sedes, ruteros, conductores, vehículos, clientes, créditos, pagos, gastos, cierres y promociones de las últimas dos semanas. Usa las mismas funciones de la base que la app, así que las cajas y el inventario quedan cuadrados. Las contraseñas son el documento de cada persona.
