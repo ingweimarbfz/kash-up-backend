@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { buildSchedule, dueDates, suggestFirstDue } = require('../src/lib/schedule')
+const { buildSchedule, dueDates, suggestFirstDue, roundStepFor } = require('../src/lib/schedule')
 
 const base = { principal: 1000000, rate: 20, rateBasis: 'total', method: 'fija', frequency: 'diaria', count: 30, disbursementDate: '2026-11-16', firstDueDate: '2026-11-17' }
 const sum = (rows, k) => rows.reduce((s, r) => s + r[k], 0)
@@ -93,4 +93,26 @@ test('valida datos', () => {
   assert.throws(() => buildSchedule({ ...base, frequency: 'personalizada' }), /cuántos días/)
   assert.throws(() => buildSchedule({ ...base, firstDueDate: '2026-11-10' }), /antes del desembolso/)
   assert.throws(() => buildSchedule({ ...base, count: 0 }), /cuotas/)
+})
+
+test('reales: 6.780 al 20 % total en 24 cuotas diarias = 24 cuotas iguales de 339', () => {
+  const s = buildSchedule({ ...base, principal: 6780, count: 24, roundTo: roundStepFor('BRL') })
+  assert.strictEqual(s.totalAmount, 8136)
+  assert.ok(s.installments.every((r) => r.amount === 339))
+  const w = buildSchedule({ ...base, principal: 6780, count: 4, frequency: 'semanal', firstDueDate: '2026-11-25', roundTo: roundStepFor('BRL') })
+  assert.ok(w.installments.every((r) => r.amount === 2034))
+})
+
+test('redondeo que dejaría una última cuota diminuta: cuotas iguales sin redondear', () => {
+  // 8.136 en 24 cuotas redondeando a 100: antes salían 23 de 353 y una de 17.
+  const s = buildSchedule({ ...base, principal: 6780, count: 24, roundTo: 100 })
+  const amounts = s.installments.map((r) => r.amount)
+  assert.strictEqual(amounts.reduce((a, b) => a + b, 0), 8136)
+  assert.ok(amounts.every((a) => a === 339))
+})
+
+test('paso de redondeo según la moneda', () => {
+  assert.strictEqual(roundStepFor('COP'), 100)
+  assert.strictEqual(roundStepFor('BRL'), 1)
+  assert.strictEqual(roundStepFor(undefined), 100)
 })

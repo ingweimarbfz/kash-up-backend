@@ -7,7 +7,7 @@ const { h, fail, clean, PHONE_RE, todayBogota } = require('../http')
 const { bySite } = require('../site')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
-const { buildSchedule, suggestFirstDue, intervalDays } = require('../lib/schedule')
+const { buildSchedule, suggestFirstDue, intervalDays, roundStepFor } = require('../lib/schedule')
 const { bestFor, loadActive } = require('../promo')
 
 const router = express.Router()
@@ -106,7 +106,7 @@ const prepare = async (req, b) => {
   const firstDueDate = b.firstDueDate || suggestFirstDue(disbursementDate, b.frequency, b.customDays, b.skipSundays)
   const schedule = buildSchedule({
     principal, method: rateInfo.method, rate: rateInfo.rate, rateBasis: rateInfo.rateBasis, frequency: b.frequency, customDays: b.customDays,
-    count: Number(b.count), disbursementDate, firstDueDate, skipSundays: Boolean(b.skipSundays), roundTo: b.roundTo === undefined ? 100 : Number(b.roundTo)
+    count: Number(b.count), disbursementDate, firstDueDate, skipSundays: Boolean(b.skipSundays), roundTo: b.roundTo === undefined ? roundStepFor((await plan.ensure(currentOrg())).country?.currency) : Number(b.roundTo)
   })
   return { customer, items, warehouse, productsTotal, discount, discountAmount, downPayment, principal, rateInfo, disbursementDate, schedule }
 }

@@ -3,7 +3,9 @@ const supabase = require('../db')
 const { h, fail, clean } = require('../http')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
-const { buildSchedule, suggestFirstDue, METHODS, FREQUENCIES } = require('../lib/schedule')
+const { buildSchedule, suggestFirstDue, roundStepFor, METHODS, FREQUENCIES } = require('../lib/schedule')
+const plan = require('../plan')
+const { currentOrg } = require('../tenant')
 
 const router = express.Router()
 const FREQS = [...Object.keys(FREQUENCIES), 'personalizada']
@@ -56,8 +58,9 @@ router.put('/tasas/:id', auth(ADMIN), h(async (req, res) => {
 router.post('/simulador', auth(STAFF), h(async (req, res) => {
   const b = req.body || {}
   const firstDueDate = b.firstDueDate || suggestFirstDue(b.disbursementDate, b.frequency, b.customDays, b.skipSundays)
+  const roundTo = b.roundTo === undefined ? roundStepFor((await plan.ensure(currentOrg())).country?.currency) : b.roundTo
   try {
-    res.send(buildSchedule({ ...b, firstDueDate }))
+    res.send(buildSchedule({ ...b, firstDueDate, roundTo }))
   } catch (e) {
     if (e.status === 400) return fail(res, e.message, 400)
     throw e
