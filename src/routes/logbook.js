@@ -35,6 +35,8 @@ const KINDS = {
   'aprobar:credito': ['credito', 'Solicitud aprobada'],
   'anular:credito': ['credito', 'Crédito anulado'],
   'editar:credito': ['credito', 'Crédito editado'],
+  'solicitar:cambio_credito': ['credito', 'Pidió cambiar fecha de cobro'],
+  'rechazar:cambio_credito': ['credito', 'Cambio de fecha rechazado'],
   'solicitar:credito': ['credito', 'Solicitud de crédito'],
   'cancelar:solicitud_credito': ['credito', 'Solicitud cancelada'],
   'rechazar:solicitud_credito': ['credito', 'Solicitud rechazada'],
@@ -85,7 +87,7 @@ router.get('/bitacora', auth(ADMIN), h(async (req, res) => {
     base().in('user_id', ids),
     base().eq('entity', 'prestamista').in('entity_id', ids.map(String)),
     // Lo que el administrador anuló o resolvió sobre la plata del prestamista (se filtra luego por prestamista).
-    base().not('user_id', 'in', `(${ids.join(',')})`).in('entity', ['pago', 'gasto', 'traslado_caja', 'credito']).in('action', ['anular', 'entregar', 'rechazar', 'editar'])
+    base().not('user_id', 'in', `(${ids.join(',')})`).in('entity', ['pago', 'gasto', 'traslado_caja', 'credito', 'cambio_credito']).in('action', ['anular', 'entregar', 'rechazar', 'editar'])
   ])
   if (error) throw error
   const seen = new Set()
@@ -95,7 +97,7 @@ router.get('/bitacora', auth(ADMIN), h(async (req, res) => {
   // Datos de cada registro.
   const payIds = logs.map((a) => (a.entity === 'credito' && a.detail?.payment) || (a.entity === 'pago' && a.entity_id))
   const expIds = logs.filter((a) => a.entity === 'gasto').map((a) => a.entity_id)
-  const credIds = logs.filter((a) => a.entity === 'credito' && !a.detail?.payment && a.action !== 'solicitar').map((a) => a.entity_id)
+  const credIds = [...logs.filter((a) => a.entity === 'credito' && !a.detail?.payment && a.action !== 'solicitar').map((a) => a.entity_id), ...logs.filter((a) => a.entity === 'cambio_credito').map((a) => a.detail?.credit)]
   const reqIds = logs.filter((a) => a.entity === 'solicitud_credito' || a.action === 'solicitar').map((a) => a.entity_id)
   const trIds = logs.filter((a) => a.entity === 'traslado_caja').map((a) => a.entity_id)
   const custIds = logs.filter((a) => a.entity === 'cliente').map((a) => a.entity_id)
@@ -154,6 +156,7 @@ router.get('/bitacora', auth(ADMIN), h(async (req, res) => {
             first && `cuota ${first.n}: ${fmt(first.from)} → ${fmt(first.to)}${d.moved > 1 ? ` (y ${d.moved - 1} siguiente${d.moved - 1 === 1 ? '' : 's'})` : ''}`,
             d.skipSundays && (d.skipSundays.to ? 'ya no cobra los domingos' : 'cobra también los domingos'),
             d.notes && 'notas actualizadas',
+            d.requestedBy && `pidió ${d.requestedBy}`,
             d.reason && `motivo: ${d.reason}`
           ].filter(Boolean)
           e.amount = null
@@ -161,6 +164,13 @@ router.get('/bitacora', auth(ADMIN), h(async (req, res) => {
           e.flags.push('Crédito editado')
         }
       }
+    } else if (a.entity === 'cambio_credito') {
+      const x = find(creds, a.detail?.credit)
+      const d = a.detail || {}
+      const fmt = (iso) => (iso ? iso.split('-').reverse().join('/') : '—')
+      if (x) Object.assign(e, { lenderId: x.lender_id ?? e.lenderId, ref: `#${x.number}` })
+      e.text = [fullName(x?.customer), d.first && `cuota ${d.first.n}: ${fmt(d.first.from)} → ${fmt(d.first.to)}${d.moved > 1 ? ` (y ${d.moved - 1} siguientes)` : ''}`, d.reason && `motivo: ${d.reason}`, d.note && `rechazo: ${d.note}`].filter(Boolean).join(' · ')
+      if (a.action === 'rechazar') e.flags.push('Cambio rechazado')
     } else if (a.entity === 'traslado_caja') {
       const x = find(trs, a.entity_id)
       if (x) Object.assign(e, { amount: n(x.amount), lenderId: x.from_lender_id, ref: x.number, text: `Estado: ${x.status}` })

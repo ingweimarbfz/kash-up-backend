@@ -188,7 +188,7 @@ const rescheduleDates = ({ installments, fromNumber, newDate, mode = 'siguientes
   const target = list.find((i) => i.number === Number(fromNumber))
   if (!target) return { error: 'Elige la cuota que quieres mover' }
   if (target.status === 'pagada') return { error: `La cuota ${target.number} ya está pagada; no se puede mover` }
-  if (disbursementDate && newDate <= disbursementDate) return { error: `La fecha debe ser posterior al desembolso (${disbursementDate})` }
+  if (disbursementDate && newDate < disbursementDate) return { error: `La fecha no puede ser antes del desembolso (${disbursementDate})` }
   const prev = list.filter((i) => i.number < target.number).pop()
   if (prev && newDate <= prev.due_date) return { error: `La fecha debe ser posterior a la cuota ${prev.number} (${prev.due_date})` }
   if (mode === 'una') {
