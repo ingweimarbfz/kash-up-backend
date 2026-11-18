@@ -9,6 +9,7 @@ const express = require('express')
 const supabase = require('../db')
 const { currentOrg } = require('../tenant')
 const { h, fail, clean, todayBogota, imageError } = require('../http')
+const { ruleForOrg } = require('../autoClose')
 const { bySite } = require('../site')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
@@ -295,7 +296,8 @@ const closureDTO = (c) => ({
   id: c.id, day: c.day, lender: c.lender ? { id: c.lender.id, fullName: fullName(c.lender) } : null,
   collectedCash: n(c.collected_cash), collectedOther: n(c.collected_other), disbursed: n(c.disbursed), expenses: n(c.expenses),
   received: n(c.received), delivered: n(c.delivered), expectedCash: n(c.expected_cash), countedCash: n(c.counted_cash), difference: n(c.difference),
-  visits: c.visits, payments: c.payments, deliveryRef: c.delivery_ref, note: c.note, closedBy: fullName(c.closer), createdAt: c.created_at
+  visits: c.visits, payments: c.payments, deliveryRef: c.delivery_ref, note: c.note, automatic: Boolean(c.automatic),
+  closedBy: c.automatic ? 'Cierre automático' : fullName(c.closer), createdAt: c.created_at
 })
 const CL_SELECT = '*, lender:users!route_closures_lender_id_fkey(id, name, last_name), closer:users!route_closures_closed_by_fkey(name, last_name)'
 
@@ -310,12 +312,16 @@ router.get('/cierres/resumen', auth(STAFF), h(async (req, res) => {
     supabase.from('route_closures').select(CL_SELECT).eq('lender_id', lender).eq('day', day).maybeSingle()
   ])
   if (error) throw error
+  const { data: reqs } = await supabase.from('route_reopen_requests').select(RR_SELECT).eq('lender_id', lender).eq('day', day).order('id', { ascending: false }).limit(1)
+  const rule = await ruleForOrg()
   res.send({
     day, lenderId: lender,
     collectedCash: n(s.collected_cash), collectedOther: n(s.collected_other), payments: s.payments, expenses: n(s.expenses), disbursed: n(s.disbursed),
     received: n(s.received), delivered: n(s.delivered), visits: s.visits, cash: n(s.balance),
     route: route.totals, unvisited: route.rows.filter((r) => r.status === 'pendiente').length,
-    closure: closure ? closureDTO(closure) : null
+    closure: closure ? closureDTO(closure) : null,
+    reopenRequest: reqs?.[0] ? reopenDTO(reqs[0]) : null,
+    autoCloseTime: rule.enabledInPlan && day === todayBogota() ? rule.time : null
   })
 }))
 
@@ -346,13 +352,116 @@ router.get('/cierres', auth(STAFF), h(async (req, res) => {
   res.send(data.map(closureDTO))
 }))
 
-// Reabrir una jornada (administrador). La entrega de efectivo ya hecha se mantiene.
-router.delete('/cierres/:id', auth(ADMIN), h(async (req, res) => {
-  const { data: c } = await supabase.from('route_closures').select('id, lender_id, day').eq('id', Number(req.params.id)).maybeSingle()
-  if (!c) return fail(res, 'Cierre no encontrado', 404)
+// ---------------------------------------------------------------------
+// Reabrir una jornada cerrada (como las solicitudes de reabrir turno de TllDash+)
+// · El prestamista la pide con un motivo; el administrador la aprueba o la rechaza.
+// · Si la pide (o la reabre) el administrador, se reabre de una vez.
+// · Al reabrir se borra el cierre; la entrega de efectivo ya hecha se mantiene.
+//   Una jornada reabierta ya no se vuelve a cerrar sola ese día.
+// ---------------------------------------------------------------------
+const RR_STATUS = { pendiente: 'Pendiente', aprobada: 'Aprobada', rechazada: 'Rechazada', cancelada: 'Cancelada' }
+const RR_SELECT = '*, lender:users!route_reopen_requests_lender_id_fkey(id, name, last_name, site_id), requester:users!route_reopen_requests_requested_by_fkey(name, last_name), resolver:users!route_reopen_requests_resolved_by_fkey(name, last_name)'
+const reopenDTO = (r) => ({
+  id: r.id, day: r.day, closureId: r.closure_id, lender: r.lender ? { id: r.lender.id, fullName: fullName(r.lender) } : null,
+  reason: r.reason, status: r.status, statusLabel: RR_STATUS[r.status], resolution: r.resolution, snapshot: r.snapshot || null,
+  requestedBy: fullName(r.requester), resolvedBy: fullName(r.resolver), resolvedAt: r.resolved_at, createdAt: r.created_at
+})
+const snapshotOf = (c) => ({ expectedCash: n(c.expected_cash), countedCash: n(c.counted_cash), difference: n(c.difference), delivered: n(c.delivered), automatic: Boolean(c.automatic), note: c.note, closedAt: c.created_at })
+
+// Borra el cierre y deja la solicitud aprobada.
+const reopenClosure = async (req, c, requestId, note) => {
   const { error } = await supabase.from('route_closures').delete().eq('id', c.id)
   if (error) throw error
-  await audit(req, 'reabrir_jornada', 'prestamista', c.lender_id, { day: c.day })
+  const { error: e2 } = await supabase.from('route_reopen_requests').update({ status: 'aprobada', resolved_by: req.user.id, resolved_at: new Date().toISOString(), resolution: note || null, snapshot: snapshotOf(c) }).eq('id', requestId)
+  if (e2) throw e2
+  await audit(req, 'reabrir_jornada', 'prestamista', c.lender_id, { day: c.day, request: requestId })
+}
+
+// El prestamista (o el administrador) pide reabrir con el motivo.
+router.post('/cierres/:id/reabrir', auth(STAFF), h(async (req, res) => {
+  const reason = clean(req.body?.reason)
+  if (!reason || reason.length < 5) return fail(res, 'Explica el motivo para reabrir la jornada (mínimo 5 letras)', 400)
+  const { data: c } = await supabase.from('route_closures').select('*').eq('id', Number(req.params.id)).maybeSingle()
+  if (!c) return fail(res, 'Cierre no encontrado', 404)
+  const admin = req.user.role === 'administrador'
+  if (!admin && c.lender_id !== req.user.id) return fail(res, 'Solo puedes pedir reabrir tu propia jornada', 403)
+  if (!admin && c.day !== todayBogota()) return fail(res, 'Solo puedes pedir reabrir la jornada de hoy. Para un día anterior habla con el administrador.', 400)
+  const { data: pending } = await supabase.from('route_reopen_requests').select('id').eq('lender_id', c.lender_id).eq('day', c.day).eq('status', 'pendiente').maybeSingle()
+  if (pending && !admin) return fail(res, 'Ya hay una solicitud pendiente para reabrir esta jornada', 409)
+  let id = pending?.id
+  if (!id) {
+    const { data: r, error } = await supabase.from('route_reopen_requests').insert({ lender_id: c.lender_id, day: c.day, closure_id: c.id, reason: reason.slice(0, 300), requested_by: req.user.id }).select('id').single()
+    if (error) return error.code === '23505' ? fail(res, 'Ya hay una solicitud pendiente para reabrir esta jornada', 409) : fail(res, error)
+    id = r.id
+  }
+  if (admin) {
+    await reopenClosure(req, c, id, pending ? reason : null)
+  } else {
+    await audit(req, 'solicitar', 'reabrir_jornada', id, { lender: c.lender_id, day: c.day, reason })
+  }
+  const { data: row } = await supabase.from('route_reopen_requests').select(RR_SELECT).eq('id', id).single()
+  res.status(201).send({ reopened: admin, request: reopenDTO(row) })
+}))
+
+// Bandeja del administrador.
+router.get('/cierres/solicitudes', auth(ADMIN), h(async (req, res) => {
+  let q = bySite(req, supabase.from('route_reopen_requests').select(RR_SELECT).order('created_at', { ascending: false }).limit(100))
+  if (RR_STATUS[req.query.estado]) q = q.eq('status', req.query.estado)
+  const { data, error } = await q
+  if (error) throw error
+  const rows = data.map(reopenDTO)
+  res.send({ rows, pending: rows.filter((r) => r.status === 'pendiente').length })
+}))
+
+router.post('/cierres/solicitudes/:id/aprobar', auth(ADMIN), h(async (req, res) => {
+  const { data: r } = await supabase.from('route_reopen_requests').select('*').eq('id', Number(req.params.id)).maybeSingle()
+  if (!r) return fail(res, 'Solicitud no encontrada', 404)
+  if (r.status !== 'pendiente') return fail(res, `La solicitud ya fue ${r.status}`, 409)
+  const { data: c } = await supabase.from('route_closures').select('*').eq('lender_id', r.lender_id).eq('day', r.day).maybeSingle()
+  if (!c) {
+    await supabase.from('route_reopen_requests').update({ status: 'aprobada', resolved_by: req.user.id, resolved_at: new Date().toISOString(), resolution: 'La jornada ya estaba abierta' }).eq('id', r.id)
+  } else {
+    await reopenClosure(req, c, r.id, clean(req.body?.note))
+  }
+  const { data: row } = await supabase.from('route_reopen_requests').select(RR_SELECT).eq('id', r.id).single()
+  res.send(reopenDTO(row))
+}))
+
+router.post('/cierres/solicitudes/:id/rechazar', auth(ADMIN), h(async (req, res) => {
+  const note = clean(req.body?.note)
+  if (!note) return fail(res, 'Escribe el motivo del rechazo', 400)
+  const { data: r } = await supabase.from('route_reopen_requests').select('id, status, lender_id, day').eq('id', Number(req.params.id)).maybeSingle()
+  if (!r) return fail(res, 'Solicitud no encontrada', 404)
+  if (r.status !== 'pendiente') return fail(res, `La solicitud ya fue ${r.status}`, 409)
+  const { error } = await supabase.from('route_reopen_requests').update({ status: 'rechazada', resolution: note.slice(0, 200), resolved_by: req.user.id, resolved_at: new Date().toISOString() }).eq('id', r.id)
+  if (error) throw error
+  await audit(req, 'rechazar', 'reabrir_jornada', r.id, { lender: r.lender_id, day: r.day, note })
+  const { data: row } = await supabase.from('route_reopen_requests').select(RR_SELECT).eq('id', r.id).single()
+  res.send(reopenDTO(row))
+}))
+
+// El prestamista retira su solicitud.
+router.post('/cierres/solicitudes/:id/cancelar', auth(STAFF), h(async (req, res) => {
+  const { data: r } = await supabase.from('route_reopen_requests').select('id, status, requested_by').eq('id', Number(req.params.id)).maybeSingle()
+  if (!r) return fail(res, 'Solicitud no encontrada', 404)
+  if (r.status !== 'pendiente') return fail(res, `La solicitud ya fue ${r.status}`, 409)
+  if (req.user.role !== 'administrador' && r.requested_by !== req.user.id) return fail(res, 'Solo quien la pidió puede retirarla', 403)
+  await supabase.from('route_reopen_requests').update({ status: 'cancelada', resolved_by: req.user.id, resolved_at: new Date().toISOString() }).eq('id', r.id)
+  res.send({ ok: true })
+}))
+
+// Reabrir directo (administrador): queda registrada como solicitud aprobada.
+router.delete('/cierres/:id', auth(ADMIN), h(async (req, res) => {
+  const { data: c } = await supabase.from('route_closures').select('*').eq('id', Number(req.params.id)).maybeSingle()
+  if (!c) return fail(res, 'Cierre no encontrado', 404)
+  const { data: pending } = await supabase.from('route_reopen_requests').select('id').eq('lender_id', c.lender_id).eq('day', c.day).eq('status', 'pendiente').maybeSingle()
+  let id = pending?.id
+  if (!id) {
+    const { data: r, error } = await supabase.from('route_reopen_requests').insert({ lender_id: c.lender_id, day: c.day, closure_id: c.id, reason: 'Reabierta por el administrador', requested_by: req.user.id }).select('id').single()
+    if (error) throw error
+    id = r.id
+  }
+  await reopenClosure(req, c, id, null)
   res.send({ ok: true })
 }))
 

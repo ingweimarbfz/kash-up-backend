@@ -24,12 +24,12 @@ const prepare = async (req, b) => {
   if (!['efectivo', 'producto'].includes(b.kind)) throw new Bad('Tipo de crédito inválido')
 
   // Cliente
-  let cq = supabase.from('customers').select('id, name, last_name, status, lender_id, credit_limit, utility_bill_at').eq('id', Number(b.customerId))
+  let cq = supabase.from('customers').select('id, name, last_name, status, lender_id, credit_limit, has_id_photos').eq('id', Number(b.customerId))
   if (req.user.role === 'prestamista') cq = cq.eq('lender_id', req.user.id)
   const { data: customer } = await cq.maybeSingle()
   if (!customer) throw new Bad('Selecciona un cliente válido')
   if (customer.status !== 'activo') throw new Bad(`El cliente está ${customer.status}; no se le pueden otorgar créditos`)
-  if (!customer.utility_bill_at) throw new Bad('Falta la foto del recibo de servicios del cliente para comprobar su dirección. Súbela antes de prestar')
+  if (!customer.has_id_photos) throw new Bad('Falta la foto del documento del cliente por ambas caras (delantera y trasera). Súbela antes de prestar')
   // Exclusividad: si el cliente ya tiene créditos con otro prestamista, solo el administrador le presta.
   if (req.user.role === 'prestamista') {
     const { data: other } = await supabase.from('credits').select('lender:users!credits_lender_id_fkey(name, last_name)')

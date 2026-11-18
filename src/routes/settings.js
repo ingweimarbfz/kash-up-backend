@@ -4,10 +4,12 @@ const { currentOrg } = require('../tenant')
 const { h, fail, clean, imageError } = require('../http')
 const { auth, ADMIN } = require('../auth')
 const { audit } = require('../audit')
+const plan = require('../plan')
+const { validTime, resolveRule } = require('../lib/autoCloseRule')
 
 const router = express.Router()
 
-const toDTO = (s, org) => ({
+const toDTO = (s, org, country) => ({
   businessName: s?.business_name || org?.name || 'Mi negocio',
   shortName: s?.short_name || null,
   logoUrl: s?.logo_url || null,
@@ -18,7 +20,8 @@ const toDTO = (s, org) => ({
   phone: org?.phone || null,
   email: org?.email || null,
   address: org?.address || null,
-  city: org?.city || null
+  city: org?.city || null,
+  autoClose: (({ mode, countryTime, ownTime, time, timezone }) => ({ mode, countryTime, ownTime, time, timezone }))(resolveRule(s, country))
 })
 
 const load = async () => {
@@ -27,7 +30,8 @@ const load = async () => {
     supabase.from('app_settings').select('*').maybeSingle(),
     supabase.from('organizations').select('*').eq('id', org).maybeSingle()
   ])
-  return toDTO(s, o)
+  const st = await plan.ensure(org)
+  return toDTO(s, o, st.country)
 }
 
 router.get('/configuracion', auth(), h(async (req, res) => res.send(await load())))
@@ -50,6 +54,25 @@ router.put('/configuracion', auth(ADMIN), h(async (req, res) => {
   if (e2) throw e2
   await audit(req, 'editar', 'configuracion', currentOrg())
   res.send(await load())
+}))
+
+// Cierre automático de jornada: hora del país, hora propia del negocio o desactivado.
+router.put('/configuracion/cierre-automatico', auth(ADMIN), h(async (req, res) => {
+  const b = req.body || {}
+  const mode = ['pais', 'hora', 'desactivado'].includes(b.mode) ? b.mode : null
+  if (!mode) return fail(res, 'Elige cómo se cierra la jornada', 400)
+  if (mode === 'hora' && !validTime(b.time)) return fail(res, 'Escribe una hora entre las 12:00 y las 23:59', 400)
+  // update y no upsert: el upsert intenta insertar sin business_name (obligatorio) y falla.
+  const patch = { auto_close_mode: mode, auto_close_time: mode === 'hora' ? b.time : null }
+  const { data: updated, error } = await supabase.from('app_settings').update(patch).select('org_id')
+  if (error) throw error
+  if (!updated?.length) {
+    const { data: o } = await supabase.from('organizations').select('name').eq('id', currentOrg()).maybeSingle()
+    const { error: e2 } = await supabase.from('app_settings').insert({ ...patch, business_name: o?.name || 'Mi negocio' })
+    if (e2) throw e2
+  }
+  await audit(req, 'editar', 'cierre_automatico', currentOrg(), { mode, time: mode === 'hora' ? b.time : null })
+  res.send((await load()).autoClose)
 }))
 
 module.exports = router
