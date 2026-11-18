@@ -521,6 +521,23 @@ router.post('/solicitudes-cambio-credito/:id/rechazar', auth(STAFF), h(async (re
   res.send(changeDTO(row))
 }))
 
+// KU-040 · Solicitudes pendientes para el administrador: contador del menú y aviso de las nuevas.
+// Devuelve cuántas hay por tipo y las más recientes (para el aviso tipo toast).
+router.get('/solicitudes/pendientes', auth(ADMIN), h(async (req, res) => {
+  const lenderName = (u) => fullName(u) || 'Un prestamista'
+  const [cr, ch, rr] = await Promise.all([
+    bySite(req, supabase.from('credit_requests').select('id, created_at, kind, lender:users!credit_requests_lender_id_fkey(name, last_name), customer:customers(name, last_name)').eq('status', 'pendiente').order('created_at', { ascending: false }).limit(50)),
+    bySite(req, supabase.from('credit_change_requests').select('id, created_at, kind, topic, credit_id, requester:users!credit_change_requests_requested_by_fkey(name, last_name), credit:credits(number)').eq('status', 'pendiente').order('created_at', { ascending: false }).limit(50)),
+    bySite(req, supabase.from('route_reopen_requests').select('id, created_at, lender:users!route_reopen_requests_lender_id_fkey(name, last_name)').eq('status', 'pendiente').order('created_at', { ascending: false }).limit(50))
+  ])
+  const items = [
+    ...(cr.data || []).map((r) => ({ key: `credito-${r.id}`, path: '/solicitudes', createdAt: r.created_at, text: `${lenderName(r.lender)} pidió aprobar un crédito para ${fullName(r.customer) || 'un cliente'}` })),
+    ...(ch.data || []).map((r) => ({ key: `cambio-${r.id}`, path: `/creditos/${r.credit_id}`, createdAt: r.created_at, text: `${lenderName(r.requester)} pidió ${r.kind === 'otro' ? 'un cambio' : 'cambiar la fecha de cobro'} en el crédito #${r.credit?.number ?? ''}` })),
+    ...(rr.data || []).map((r) => ({ key: `jornada-${r.id}`, path: '/rutas', createdAt: r.created_at, text: `${lenderName(r.lender)} pidió reabrir su jornada` }))
+  ].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+  res.send({ creditos: (cr.data || []).length, cambios: (ch.data || []).length, jornadas: (rr.data || []).length, items: items.slice(0, 20) })
+}))
+
 // Portal del cliente: sus créditos con cuotas.
 router.get('/mis-creditos', auth(['cliente']), h(async (req, res) => {
   const { data: customer } = await supabase.from('customers').select('id').eq('user_id', req.user.id).maybeSingle()
