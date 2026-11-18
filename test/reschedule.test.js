@@ -20,7 +20,8 @@ test('no se mueve una cuota pagada ni antes de la anterior o del desembolso', ()
   const list = inst(['2026-11-08', '2026-11-15'], 1)
   assert.match(rescheduleDates({ ...base, installments: list, fromNumber: 1, newDate: '2026-11-09' }).error, /ya está pagada/)
   assert.match(rescheduleDates({ ...base, installments: list, fromNumber: 2, newDate: '2026-11-08' }).error, /posterior a la cuota 1/)
-  assert.match(rescheduleDates({ ...base, installments: inst(['2026-11-08']), fromNumber: 1, newDate: '2026-11-01' }).error, /posterior al desembolso/)
+  assert.match(rescheduleDates({ ...base, installments: inst(['2026-11-08']), fromNumber: 1, newDate: '2026-10-31' }).error, /antes del desembolso/)
+  assert.deepStrictEqual(rescheduleDates({ ...base, installments: inst(['2026-11-08']), fromNumber: 1, newDate: '2026-11-01' }).changes.map((c) => [c.number, c.to]), [[1, '2026-11-01']])
 })
 
 test('diario sin domingos: salta el domingo al recorrer', () => {
