@@ -34,3 +34,4 @@ app.use((req, res) => res.status(404).send({ message: 'Ruta no encontrada' }))
 
 app.listen(PORT, () => console.log(`API QuontUp360 escuchando en el puerto ${PORT}`))
 require('./notify').startScheduler()
+require('./autoClose').startAutoClose()

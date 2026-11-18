@@ -184,12 +184,19 @@ const closure = async (lenderId, detail, reopened, req) => {
   if (!c) return null
   const diff = Number(c.difference)
   return { siteId: site.id, path: `/rutas/${lenderId}`,
-    html: `🔒 <b>CIERRE DE JORNADA</b>\n${SEP}\n🧑‍💼 ${esc(fullName(u))}${siteLine(site)} · 📅 ${fmtDate(c.day)}\n` +
+    html: `🔒 <b>${c.automatic ? 'CIERRE AUTOMÁTICO DE JORNADA' : 'CIERRE DE JORNADA'}</b>\n${SEP}\n🧑‍💼 ${esc(fullName(u))}${siteLine(site)} · 📅 ${fmtDate(c.day)}\n` +
       `💵 Recaudo en efectivo: ${money(c.collected_cash)}${Number(c.collected_other) ? ` · otros ${money(c.collected_other)}` : ''}\n` +
       `🧾 Pagos: ${c.payments} · 🚪 Visitas: ${c.visits}\n💸 Prestado: ${money(c.disbursed)} · Gastos: ${money(c.expenses)}\n` +
       `🧮 Esperado: ${money(c.expected_cash)} · Contado: ${money(c.counted_cash)}\n` +
       (diff === 0 ? '✅ Cuadre exacto' : diff > 0 ? `🟢 Sobrante: ${money(diff)}` : `🔴 <b>Faltante: ${money(-diff)}</b>`) +
       (Number(c.delivered) ? `\n🏦 Entregó al negocio: ${money(c.delivered)}` : '') + (c.note ? `\n📝 ${esc(c.note)}` : '') }
+}
+
+const reopenRequest = async (id, action, detail, req) => {
+  const site = await siteOf(detail?.lender)
+  const { data: u } = await supabase.from('users').select('name, last_name').eq('id', detail?.lender || 0).maybeSingle()
+  if (action === 'rechazar') return { siteId: site.id, path: '/rutas', html: `⛔ <b>REAPERTURA DE JORNADA RECHAZADA</b>\n${SEP}\n🧑‍💼 ${esc(fullName(u))}${siteLine(site)} · 📅 ${fmtDate(detail?.day)}\n📝 ${esc(detail?.note || '')}\n👤 ${byUser(req)}` }
+  return { siteId: site.id, path: '/rutas', html: `🙋 <b>SOLICITUD PARA REABRIR JORNADA</b>\n${SEP}\n🧑‍💼 ${esc(fullName(u))}${siteLine(site)} · 📅 ${fmtDate(detail?.day)}\n📝 ${esc(detail?.reason || '')}\n⏳ El administrador debe aprobarla o rechazarla en Rutas` }
 }
 
 const customer = async (id, action, detail, req) => {
@@ -242,6 +249,8 @@ const onAudit = (req, action, entity, id, detail) => {
     'rechazar:traslado_caja': ['caja', () => transfer(id, 'rechazar', req)],
     'cerrar_jornada:prestamista': ['caja', () => closure(id, detail, false, req)],
     'reabrir_jornada:prestamista': ['caja', () => closure(id, detail, true, req)],
+    'solicitar:reabrir_jornada': ['caja', () => reopenRequest(id, 'solicitar', detail, req)],
+    'rechazar:reabrir_jornada': ['caja', () => reopenRequest(id, 'rechazar', detail, req)],
     'crear:cliente': ['clientes', () => customer(id, 'crear', detail, req)],
     'trasladar:cliente': ['clientes', () => customer(id, 'trasladar', detail, req)],
     'crear:tanqueo': ['vehiculos', () => vehicleLog(id, 'tanqueo', req)],

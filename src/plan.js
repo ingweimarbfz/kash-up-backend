@@ -48,7 +48,7 @@ const load = async (orgId) => {
   const st = { ...EMPTY, loadedAt: Date.now() }
   if (org) {
     st.org = { id: org.id, name: org.name, status: org.status, billingCycle: org.billing_cycle, startDate: org.start_date, renewalDate: org.renewal_date }
-    st.country = org.country ? { code: org.country.code, name: org.country.name, currency: org.country.currency, locale: org.country.locale, timezone: org.country.timezone, docTypes: docTypesFor(org.country.code), phone: phoneRule(org.country.code) } : null
+    st.country = org.country ? { code: org.country.code, name: org.country.name, currency: org.country.currency, locale: org.country.locale, timezone: org.country.timezone, autoCloseTime: org.country.auto_close_time ? String(org.country.auto_close_time).slice(0, 5) : null, docTypes: docTypesFor(org.country.code), phone: phoneRule(org.country.code) } : null
     if (org.plan) {
       st.plan = org.plan
       st.features = [...new Set([...(org.plan.features || []), ...(org.extra_features || [])])]

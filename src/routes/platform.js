@@ -14,6 +14,7 @@ const { JWT_SECRET } = require('../config')
 const { h, fail, clean, EMAIL_RE, PHONE_RE, DOC_RE, HttpError } = require('../http')
 const { isValidPhone, phoneMessage, phoneRule, digitsText } = require('../lib/phones')
 const { docTypesFor, defaultDocType, isValidDocType } = require('../lib/docTypes')
+const { validTime } = require('../lib/autoCloseRule')
 const { auth, ADMIN, ALL } = require('../auth')
 const { currentOrg, runAsOrg } = require('../tenant')
 const { audit } = require('../audit')
@@ -30,7 +31,7 @@ const intOrNull = (v, min, label) => {
   if (!Number.isInteger(n) || n < min) throw new HttpError(`${label}: escribe un número entero desde ${min} o déjalo vacío para ilimitado`)
   return n
 }
-const countryDTO = (c) => ({ code: c.code, name: c.name, currency: c.currency, currencyName: c.currency_name, locale: c.locale, timezone: c.timezone, phonePrefix: c.phone_prefix, active: c.active, sortOrder: c.sort_order, docTypes: docTypesFor(c.code), phone: phoneRule(c.code) })
+const countryDTO = (c) => ({ code: c.code, name: c.name, currency: c.currency, currencyName: c.currency_name, locale: c.locale, timezone: c.timezone, autoCloseTime: c.auto_close_time ? String(c.auto_close_time).slice(0, 5) : null, phonePrefix: c.phone_prefix, active: c.active, sortOrder: c.sort_order, docTypes: docTypesFor(c.code), phone: phoneRule(c.code) })
 const featureDTO = (f) => ({ key: f.key, label: f.label, group: f.grp, description: f.description, core: f.core, sortOrder: f.sort_order })
 const planDTO = (p, prices = []) => ({
   id: p.id,
@@ -141,6 +142,10 @@ router.put('/plataforma/paises/:code', pauth, h(async (req, res) => {
   }
   if ('currencyName' in b) patch.currency_name = clean(b.currencyName) || patch.currency || 'Moneda'
   if ('sortOrder' in b) patch.sort_order = Number(b.sortOrder) || 0
+  if ('autoCloseTime' in b) {
+    if (b.autoCloseTime && !validTime(b.autoCloseTime)) return fail(res, 'La hora del cierre automático va entre las 12:00 y las 23:59', 400)
+    patch.auto_close_time = b.autoCloseTime || null
+  }
   const data = must(await supabase.from('countries').update(patch).eq('code', req.params.code).select('*').maybeSingle())
   if (!data) return fail(res, 'País no encontrado', 404)
   // Si cambia la moneda, los precios de ese país pasan a la nueva moneda (hay que revisarlos).
