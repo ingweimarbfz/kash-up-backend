@@ -62,8 +62,15 @@ router.put('/configuracion/cierre-automatico', auth(ADMIN), h(async (req, res) =
   const mode = ['pais', 'hora', 'desactivado'].includes(b.mode) ? b.mode : null
   if (!mode) return fail(res, 'Elige cómo se cierra la jornada', 400)
   if (mode === 'hora' && !validTime(b.time)) return fail(res, 'Escribe una hora entre las 12:00 y las 23:59', 400)
-  const { error } = await supabase.from('app_settings').upsert({ auto_close_mode: mode, auto_close_time: mode === 'hora' ? b.time : null }, { onConflict: 'org_id' })
+  // update y no upsert: el upsert intenta insertar sin business_name (obligatorio) y falla.
+  const patch = { auto_close_mode: mode, auto_close_time: mode === 'hora' ? b.time : null }
+  const { data: updated, error } = await supabase.from('app_settings').update(patch).select('org_id')
   if (error) throw error
+  if (!updated?.length) {
+    const { data: o } = await supabase.from('organizations').select('name').eq('id', currentOrg()).maybeSingle()
+    const { error: e2 } = await supabase.from('app_settings').insert({ ...patch, business_name: o?.name || 'Mi negocio' })
+    if (e2) throw e2
+  }
   await audit(req, 'editar', 'cierre_automatico', currentOrg(), { mode, time: mode === 'hora' ? b.time : null })
   res.send((await load()).autoClose)
 }))
