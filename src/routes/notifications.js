@@ -10,7 +10,7 @@ const router = express.Router()
 const TOKEN_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/
 const mask = (t) => (t ? `${t.split(':')[0]}:••••••${t.slice(-4)}` : null)
 // Lo que puede recibir un rutero: los grupos de su sede en estas secciones.
-const LENDER_SECTIONS = ['cobros', 'creditos', 'gastos', 'resumen']
+const LENDER_SECTIONS = ['cobros', 'creditos', 'jornadas', 'gastos', 'resumen']
 
 const channelDTO = (c, sites) => ({
   id: c.id, section: c.section, sectionLabel: SECTIONS[c.section]?.label, siteId: c.site_id,
