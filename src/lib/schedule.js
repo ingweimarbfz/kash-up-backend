@@ -11,8 +11,8 @@
 //
 // Periodicidad: diaria (1 día), semanal (7), quincenal (15), mensual (mismo día cada mes) o personalizada
 // (cada N días). Con "excluir domingos" una cuota que caiga en domingo pasa al lunes.
-// Valores en pesos enteros. Las cuotas de fija y anticipada se redondean hacia arriba al múltiplo de roundTo
-// y la última cuota ajusta la diferencia para que el total cuadre exacto.
+// Valores enteros en la moneda del negocio. Las cuotas de fija y anticipada se redondean al múltiplo de roundTo
+// (según la moneda: 100 en COP, 1 en BRL…) y la última cuota ajusta la diferencia para que el total cuadre exacto.
 // =====================================================================
 
 const FREQUENCIES = { diaria: 1, semanal: 7, quincenal: 15, mensual: 30 }
@@ -67,19 +67,29 @@ const suggestFirstDue = (disbursementDate, frequency, customDays, skipSundays) =
 
 const roundUp = (v, step) => (step > 1 ? Math.ceil(v / step) * step : Math.ceil(v))
 
-// Reparte un total en n cuotas redondeadas hacia arriba; la última ajusta.
+// Reparte un total en n cuotas iguales redondeadas hacia arriba al múltiplo de step; la última ajusta.
+// Si ese redondeo deja la última cuota en menos de la mitad de las demás (p. ej. 23 de 353 y una de 17),
+// se reparte sin redondear: cuotas iguales en unidades y la última lleva los pocos pesos de diferencia.
 const split = (total, n, step) => {
-  const base = Math.min(roundUp(total / n, step), Math.floor(total / Math.max(n - 1, 1)) || total)
+  if (n === 1) return [total]
+  const exact = total / n
+  let base = roundUp(exact, step)
+  if (total - base * (n - 1) < base / 2) base = Math.floor(exact)
   const out = Array(n).fill(base)
   out[n - 1] = total - base * (n - 1)
-  // Si el redondeo deja la última cuota negativa o en cero (cuotas muy pequeñas), se reparte sin redondear.
-  if (out[n - 1] <= 0) {
-    const plain = Math.floor(total / n)
+  // Cuotas muy pequeñas: se reparte sin redondear.
+  if (out[n - 1] <= 0 || base <= 0) {
+    const plain = Math.floor(exact)
     out.fill(plain)
     out[n - 1] = total - plain * (n - 1)
   }
   return out
 }
+
+// Múltiplo al que se redondean las cuotas según la moneda del negocio: en pesos colombianos y chilenos
+// se cobra en cientos; en guaraníes, en miles; en reales, soles, dólares, etc., en unidades.
+const ROUND_STEPS = { COP: 100, CLP: 100, PYG: 1000, ARS: 10 }
+const roundStepFor = (currency) => ROUND_STEPS[String(currency || 'COP').toUpperCase()] || 1
 
 const validate = (p) => {
   const errors = []
@@ -167,4 +177,4 @@ const buildSchedule = (p) => {
   }
 }
 
-module.exports = { buildSchedule, suggestFirstDue, dueDates, intervalDays, FREQUENCIES, METHODS, parseISO, toISO }
+module.exports = { buildSchedule, roundStepFor, suggestFirstDue, dueDates, intervalDays, FREQUENCIES, METHODS, parseISO, toISO }

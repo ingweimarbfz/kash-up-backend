@@ -17,7 +17,7 @@ const STAFF = ['administrador', 'prestamista']
 const FLEET = ['administrador', 'prestamista', 'conductor']
 const ALL = ROLES
 
-const USER_COLUMNS = 'id, org_id, identification, name, last_name, username, email, phone, role, extra_roles, is_lender, avatar_url, active, last_login_at, created_at, site_id, site:sites(id, name, city)'
+const USER_COLUMNS = 'id, org_id, doc_type, identification, name, last_name, username, email, phone, role, extra_roles, is_lender, avatar_url, active, last_login_at, created_at, site_id, site:sites(id, name, city)'
 
 // KU-031: perfiles con los que puede entrar un usuario. role es el principal; extra_roles, los adicionales.
 const PROFILE_ORDER = ['administrador', 'prestamista', 'conductor']
@@ -31,6 +31,7 @@ const profilesOf = (u) => {
 const toUserDTO = (u) => ({
   id: u.id,
   orgId: u.org_id,
+  docType: u.doc_type ?? null,
   identification: u.identification,
   name: u.name,
   lastName: u.last_name,

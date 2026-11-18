@@ -3,6 +3,8 @@ const bcrypt = require('bcryptjs')
 const supabase = require('../db')
 const tenant = require('../tenant')
 const { h, fail, clean, EMAIL_RE, PHONE_RE, imageError } = require('../http')
+const { isValidPhone, phoneMessage, phoneRule, digitsText } = require('../lib/phones')
+const plan = require('../plan')
 const { auth, signToken, toUserDTO, profilesOf, ROLE_LABELS, USER_COLUMNS } = require('../auth')
 const { audit } = require('../audit')
 
@@ -71,7 +73,8 @@ router.put('/perfil', auth(), h(async (req, res) => {
     patch.email = clean(b.email)
   }
   if ('phone' in b) {
-    if (clean(b.phone) && !PHONE_RE.test(clean(b.phone))) return fail(res, 'Teléfono no válido (7 a 10 dígitos)', 400)
+    const country = req.user.org_id ? (await plan.ensure(req.user.org_id)).country?.code : null
+    if (clean(b.phone) && !isValidPhone(clean(b.phone), country)) return fail(res, phoneMessage(country, 'Teléfono'), 400)
     patch.phone = clean(b.phone)
   }
   if ('avatarUrl' in b) {
