@@ -53,3 +53,10 @@ begin
   end if;
   return new;
 end $$;
+
+-- ---------------------------------------------------------------------
+-- Clientes: el documento por ambas caras es obligatorio; el recibo de servicios pasa a ser opcional.
+-- has_id_photos evita leer las imágenes para saber si están (listas y validación del crédito).
+-- ---------------------------------------------------------------------
+alter table public.customers add column if not exists has_id_photos boolean
+  generated always as (coalesce(id_photo_url, '') <> '' and coalesce(id_photo_back_url, '') <> '') stored;

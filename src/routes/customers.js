@@ -12,7 +12,7 @@ const { bySite } = require('../site')
 const { defaultDocType, isValidDocType } = require('../lib/docTypes')
 
 const router = express.Router()
-const LIST_COLUMNS = 'id, doc_type, identification, name, last_name, phone, address, neighborhood, city, photo_thumb, utility_bill_at, lender_id, user_id, status, created_at, lender:users!customers_lender_id_fkey(id, name, last_name)'
+const LIST_COLUMNS = 'id, doc_type, identification, name, last_name, phone, address, neighborhood, city, photo_thumb, utility_bill_at, has_id_photos, lender_id, user_id, status, created_at, lender:users!customers_lender_id_fkey(id, name, last_name)'
 
 const fullName = (x) => (x ? `${x.name} ${x.last_name || ''}`.trim() : null)
 const toDTO = (c, extra = {}) => ({
@@ -38,6 +38,7 @@ const toDTO = (c, extra = {}) => ({
   utilityBillUrl: c.utility_bill_url ?? null,
   utilityBillAt: c.utility_bill_at ?? null,
   hasUtilityBill: Boolean(c.utility_bill_at || c.utility_bill_url),
+  hasIdPhotos: c.has_id_photos ?? Boolean(c.id_photo_url && c.id_photo_back_url),
   lat: c.lat ?? null,
   lng: c.lng ?? null,
   lenderId: c.lender_id,
@@ -74,7 +75,9 @@ const validate = (b, isNew = false, country = null, currentDocType = null) => {
   if (clean(b.email) && !EMAIL_RE.test(clean(b.email))) errors.push('Correo no válido')
   if (!clean(b.address)) errors.push('La dirección es requerida')
   if (!clean(b.photoUrl)) errors.push('La foto del cliente es obligatoria')
-  if (isNew && !clean(b.utilityBillUrl)) errors.push('La foto del recibo de servicios (para comprobar la dirección) es obligatoria')
+  // Documento por ambas caras: obligatorio (el recibo de servicios es opcional).
+  if (!clean(b.idPhotoUrl)) errors.push('La foto del documento (delantera) es obligatoria')
+  if (!clean(b.idPhotoBackUrl)) errors.push('La foto del documento (trasera) es obligatoria')
   for (const [k, label] of [['photoUrl', 'La foto'], ['photoThumb', 'La miniatura'], ['idPhotoUrl', 'La foto del documento (delantera)'], ['idPhotoBackUrl', 'La foto del documento (trasera)'], ['utilityBillUrl', 'La foto del recibo de servicios']]) {
     const e = imageError(b[k], 900); if (e) errors.push(`${label}: ${e}`)
   }
@@ -187,7 +190,7 @@ router.post('/clientes', auth(STAFF), h(async (req, res) => {
   await plan.checkLimit(currentOrg(), 'customers')
   let lenderId = req.user.role === 'prestamista' ? req.user.id : await checkLender(b.lenderId)
   if (lenderId === undefined) return fail(res, 'El prestamista asignado no existe o está inactivo', 400)
-  const row = { ...rowFrom(b, country), utility_bill_at: new Date().toISOString(), lender_id: lenderId, created_by: req.user.id }
+  const row = { ...rowFrom(b, country), utility_bill_at: clean(b.utilityBillUrl) ? new Date().toISOString() : null, lender_id: lenderId, created_by: req.user.id }
   if (req.user.role === 'administrador' && b.status) row.status = b.status
   const { data, error } = await supabase.from('customers').insert(row).select('id').single()
   if (error) return dupMessage(error) ? fail(res, dupMessage(error), 409) : fail(res, error)
@@ -227,6 +230,23 @@ router.put('/clientes/:id', auth(STAFF), h(async (req, res) => {
   res.send(toDTO(await loadOne(req, id)))
 }))
 
+// Subir o cambiar las fotos del documento (delantera y trasera).
+router.put('/clientes/:id/documento', auth(STAFF), h(async (req, res) => {
+  const id = Number(req.params.id)
+  const current = await loadOne(req, id)
+  if (!current) return fail(res, 'Cliente no encontrado', 404)
+  const front = clean(req.body?.idPhotoUrl) || current.id_photo_url
+  const back = clean(req.body?.idPhotoBackUrl) || current.id_photo_back_url
+  if (!front || !back) return fail(res, `Toma la foto del documento ${!front && !back ? 'por ambas caras' : !front ? '(delantera)' : '(trasera)'}`, 400)
+  for (const [v, label] of [[req.body?.idPhotoUrl, 'Documento (delantera)'], [req.body?.idPhotoBackUrl, 'Documento (trasera)']]) {
+    const e = imageError(v, 900); if (e) return fail(res, `${label}: ${e}`, 400)
+  }
+  const { error } = await supabase.from('customers').update({ id_photo_url: front, id_photo_back_url: back }).eq('id', id)
+  if (error) throw error
+  await audit(req, 'documento', 'cliente', id)
+  res.send(toDTO(await loadOne(req, id)))
+}))
+
 // Subir o cambiar la foto del recibo de servicios.
 router.put('/clientes/:id/recibo', auth(STAFF), h(async (req, res) => {
   const id = Number(req.params.id)
@@ -253,7 +273,6 @@ router.post('/clientes/:id/traslado', auth(STAFF), h(async (req, res) => {
   if (to === undefined) return fail(res, 'El prestamista de destino no existe o está inactivo', 400)
   if (!to) return fail(res, 'Elige el prestamista de la nueva ruta', 400)
   const moving = clean(b.address) && clean(b.address) !== current.address
-  if (moving && !clean(b.utilityBillUrl)) return fail(res, 'Toma la foto del recibo de servicios de la nueva dirección', 400)
   const e = imageError(b.utilityBillUrl, 900)
   if (e) return fail(res, `Recibo: ${e}`, 400)
   if (b.lat !== undefined && b.lat !== null && b.lat !== '' && !(Math.abs(Number(b.lat)) <= 90)) return fail(res, 'Latitud inválida', 400)
