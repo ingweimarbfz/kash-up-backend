@@ -8,7 +8,7 @@ const { isValidPhone, phoneMessage, phoneRule, digitsText } = require('../lib/ph
 const { bySite } = require('../site')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
-const { buildSchedule, suggestFirstDue, intervalDays, roundStepFor } = require('../lib/schedule')
+const { buildSchedule, suggestFirstDue, intervalDays, roundStepFor, rescheduleDates } = require('../lib/schedule')
 const { bestFor, loadActive } = require('../promo')
 
 const router = express.Router()
@@ -378,6 +378,45 @@ router.post('/creditos/:id/anular', auth(ADMIN), h(async (req, res) => {
   const { error } = await supabase.rpc('void_credit', { p_org: currentOrg(), p_credit: id, p_reason: reason, p_user: req.user.id })
   if (error) return error.code === 'P0001' ? fail(res, error.message, 400) : fail(res, error)
   await audit(req, 'anular', 'credito', id, { reason })
+  res.send(await detail(req, id))
+}))
+
+// Editar un crédito (administrador): fechas de cobro, no cobrar domingos y notas. Los montos no cambian.
+// Con preview: true devuelve los cambios sin guardar. El motivo es obligatorio y queda en la bitácora.
+router.put('/creditos/:id', auth(ADMIN), h(async (req, res) => {
+  const id = Number(req.params.id)
+  const b = req.body || {}
+  const { data: c } = await supabase.from('credits').select('id, number, status, frequency, interval_days, skip_sundays, disbursement_date, notes').eq('id', id).maybeSingle()
+  if (!c) return fail(res, 'Crédito no encontrado', 404)
+  if (c.status === 'anulado') return fail(res, 'El crédito está anulado; no se puede editar', 400)
+  const skipSundays = b.skipSundays === undefined ? c.skip_sundays : Boolean(b.skipSundays)
+  let changes = []
+  if (b.dates) {
+    if (c.status !== 'activo') return fail(res, `El crédito está ${c.status}; sus fechas ya no se pueden cambiar`, 400)
+    const { data: inst } = await supabase.from('installments').select('id, number, due_date, status').eq('credit_id', id).order('number')
+    const r = rescheduleDates({ installments: inst, fromNumber: b.dates.fromNumber, newDate: b.dates.newDate, mode: b.dates.mode === 'una' ? 'una' : 'siguientes',
+      frequency: c.frequency, customDays: c.interval_days, skipSundays, disbursementDate: c.disbursement_date })
+    if (r.error) return fail(res, r.error, 400)
+    changes = r.changes
+  }
+  const notesChanged = b.notes !== undefined && (clean(b.notes) || null) !== (c.notes || null)
+  const sundaysChanged = skipSundays !== c.skip_sundays
+  if (b.preview) return res.send({ changes })
+  if (!changes.length && !notesChanged && !sundaysChanged) return fail(res, 'No hay cambios para guardar', 400)
+  const reason = clean(b.reason)
+  if (!reason || reason.length < 5) return fail(res, 'Escribe el motivo del cambio (mínimo 5 letras): queda en la bitácora', 400)
+  const p = { org_id: currentOrg(), credit_id: id, changes: changes.map((x) => ({ id: x.id, due: x.to })) }
+  if (sundaysChanged) p.skip_sundays = skipSundays
+  if (notesChanged) p.notes = clean(b.notes) || ''
+  const { error } = await supabase.rpc('edit_credit', { p })
+  if (error) return error.code === 'P0001' ? fail(res, error.message, 400) : fail(res, error)
+  await audit(req, 'editar', 'credito', id, {
+    number: c.number, reason,
+    dates: changes.slice(0, 120).map((x) => ({ n: x.number, from: x.from, to: x.to })), moved: changes.length,
+    mode: b.dates?.mode === 'una' ? 'una' : b.dates ? 'siguientes' : null,
+    ...(sundaysChanged ? { skipSundays: { from: c.skip_sundays, to: skipSundays } } : {}),
+    ...(notesChanged ? { notes: { from: c.notes || null, to: clean(b.notes) || null } } : {})
+  })
   res.send(await detail(req, id))
 }))
 
