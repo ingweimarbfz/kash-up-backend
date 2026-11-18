@@ -215,6 +215,21 @@ const reopenRequest = async (id, action, detail, req) => {
   return { siteId: site.id, path: '/rutas', html: `🙋 <b>SOLICITUD PARA REABRIR JORNADA</b>\n${SEP}\n🧑‍💼 ${esc(fullName(u))}${siteLine(site)} · 📅 ${fmtDate(detail?.day)}\n📝 ${esc(detail?.reason || '')}\n⏳ El administrador debe aprobarla o rechazarla en Rutas` }
 }
 
+// Solicitud del prestamista para cambiar la fecha de cobro de un crédito.
+const changeRequest = async (detail, action, req, creditId = null) => {
+  const { data: c } = await supabase.from('credits').select('number, lender_id, customer:customers(name, last_name)').eq('id', creditId || detail?.credit || 0).maybeSingle()
+  if (!c) return null
+  const site = await siteOf(c.lender_id)
+  const f = action === 'aprobar' ? detail?.dates?.[0] : detail?.first
+  const moved = detail?.moved || 0
+  const dates = f ? `\n📅 Cuota ${f.n}: ${fmtDate(f.from)} → ${fmtDate(f.to)}${moved > 1 ? ` (y ${moved - 1} siguiente${moved - 1 === 1 ? '' : 's'})` : ''}` : ''
+  const head = { solicitar: '🙋 <b>SOLICITUD DE CAMBIO DE FECHA</b>', aprobar: '✅ <b>CAMBIO DE FECHA APROBADO</b>', rechazar: '⛔ <b>CAMBIO DE FECHA RECHAZADO</b>' }[action]
+  return { siteId: site.id, path: `/creditos/${creditId || detail?.credit}`,
+    html: `${head} · Crédito #${c.number}\n${SEP}\n👤 ${esc(fullName(c.customer))}${siteLine(site)}${dates}` +
+      (detail?.reason ? `\n📝 ${esc(detail.reason)}` : '') + (action === 'rechazar' && detail?.note ? `\n💬 ${esc(detail.note)}` : '') +
+      (action === 'solicitar' ? `\n🧑‍💼 Pidió: ${byUser(req)}\n⏳ El administrador debe aprobarla o rechazarla en Solicitudes` : action === 'aprobar' ? `\n🧑‍💼 Pidió: ${esc(detail?.requestedBy || '')}\n👤 Aprobó: ${byUser(req)}` : `\n👤 ${byUser(req)}`) }
+}
+
 const customer = async (id, action, detail, req) => {
   const { data: c } = await supabase.from('customers').select('id, name, last_name, identification, phone, neighborhood, address, lender_id, lender:users!customers_lender_id_fkey(name, last_name)').eq('id', id).maybeSingle()
   if (!c) return null
@@ -252,6 +267,9 @@ const onAudit = (req, action, entity, id, detail) => {
     'aprobar:credito': ['creditos', () => credit(id, 'aprobar', req)],
     'anular:credito': ['creditos', () => credit(id, 'anular', req)],
     'solicitar:credito': ['creditos', () => request(id, 'solicitar', req)],
+    'solicitar:cambio_credito': ['creditos', () => changeRequest(detail, 'solicitar', req)],
+    'rechazar:cambio_credito': ['creditos', () => changeRequest(detail, 'rechazar', req)],
+    'editar:credito': ['creditos', () => (detail?.request ? changeRequest(detail, 'aprobar', req, id) : null)],
     'rechazar:solicitud_credito': ['creditos', () => request(id, 'rechazar', req)],
     'cancelar:solicitud_credito': ['creditos', () => request(id, 'cancelar', req)],
     'crear:gasto': ['gastos', () => expense(id, false, req)],

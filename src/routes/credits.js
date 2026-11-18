@@ -336,6 +336,7 @@ const detail = async (req, id) => {
     supabase.from('payments').select('id, number, kind, amount, method, reference, paid_on, note, status, void_reason, created_at, user:users!payments_user_id_fkey(name, last_name)').eq('credit_id', id).order('id', { ascending: false }),
     supabase.from('credits').select('id, number, status, renewed_from_id').or(`id.eq.${c.renewed_from_id || 0},renewed_from_id.eq.${id}`)
   ])
+  const { data: pend } = await supabase.from('credit_change_requests').select('id, from_number, new_date, mode, changes, reason, created_at, requester:users!credit_change_requests_requested_by_fkey(name, last_name)').eq('credit_id', id).eq('status', 'pendiente').maybeSingle()
   const today = todayBogota()
   const from = (links || []).find((k) => k.id === c.renewed_from_id)
   const renewedBy = (links || []).find((k) => k.renewed_from_id === id && k.status !== 'anulado')
@@ -351,6 +352,7 @@ const detail = async (req, id) => {
     renewedFrom: from ? { id: from.id, number: from.number } : null, payoffAmount: Number(c.payoff_amount || 0),
     renewedBy: renewedBy ? { id: renewedBy.id, number: renewedBy.number } : null,
     waivedAmount: Number(bal[id]?.waived_amount ?? 0),
+    pendingChange: pend ? { id: pend.id, fromNumber: pend.from_number, newDate: pend.new_date, mode: pend.mode, changes: pend.changes || [], reason: pend.reason, requestedBy: fullName(pend.requester), createdAt: pend.created_at } : null,
     payments: (pays || []).map((p) => ({
       id: p.id, number: `RC-${String(p.number).padStart(4, '0')}`, kind: p.kind, amount: Number(p.amount), method: p.method, reference: p.reference, paidOn: p.paid_on, note: p.note,
       status: p.status, voidReason: p.void_reason, createdAt: p.created_at, user: fullName(p.user)
@@ -381,43 +383,117 @@ router.post('/creditos/:id/anular', auth(ADMIN), h(async (req, res) => {
   res.send(await detail(req, id))
 }))
 
-// Editar un crédito (administrador): fechas de cobro, no cobrar domingos y notas. Los montos no cambian.
-// Con preview: true devuelve los cambios sin guardar. El motivo es obligatorio y queda en la bitácora.
-router.put('/creditos/:id', auth(ADMIN), h(async (req, res) => {
+// ---------------------------------------------------------------------
+// Editar un crédito
+// · Administrador: cambia fechas de cobro, "no cobrar los domingos" y notas. Los montos no cambian.
+// · Prestamista: no edita directo; envía una solicitud de cambio de fecha que el administrador aprueba.
+// · Con preview: true devuelve los cambios sin guardar. El motivo es obligatorio y queda en la bitácora.
+// ---------------------------------------------------------------------
+const CREDIT_EDIT_COLS = 'id, number, status, lender_id, frequency, interval_days, skip_sundays, disbursement_date, notes'
+const planChanges = async (c, dates, skipSundays) => {
+  if (c.status !== 'activo') throw new Bad(`El crédito está ${c.status}; sus fechas ya no se pueden cambiar`)
+  const { data: inst } = await supabase.from('installments').select('id, number, due_date, status').eq('credit_id', c.id).order('number')
+  const r = rescheduleDates({ installments: inst, fromNumber: dates.fromNumber, newDate: dates.newDate, mode: dates.mode === 'una' ? 'una' : 'siguientes',
+    frequency: c.frequency, customDays: c.interval_days, skipSundays, disbursementDate: c.disbursement_date })
+  if (r.error) throw new Bad(r.error)
+  return r.changes
+}
+// Aplica la edición y la deja en la auditoría (y por ella en la bitácora).
+const applyEdit = async (req, c, { changes, skipSundays, notes, reason, mode, request }) => {
+  const sundaysChanged = skipSundays !== c.skip_sundays
+  const notesChanged = notes !== undefined && (clean(notes) || null) !== (c.notes || null)
+  const p = { org_id: currentOrg(), credit_id: c.id, changes: changes.map((x) => ({ id: x.id, due: x.to })) }
+  if (sundaysChanged) p.skip_sundays = skipSundays
+  if (notesChanged) p.notes = clean(notes) || ''
+  const { error } = await supabase.rpc('edit_credit', { p })
+  if (error) throw error.code === 'P0001' ? new Bad(error.message) : error
+  await audit(req, 'editar', 'credito', c.id, {
+    number: c.number, reason, mode,
+    dates: changes.slice(0, 120).map((x) => ({ n: x.number, from: x.from, to: x.to })), moved: changes.length,
+    ...(sundaysChanged ? { skipSundays: { from: c.skip_sundays, to: skipSundays } } : {}),
+    ...(notesChanged ? { notes: { from: c.notes || null, to: clean(notes) || null } } : {}),
+    ...(request ? { request: request.id, requestedBy: request.requestedBy } : {})
+  })
+}
+
+router.put('/creditos/:id', auth(STAFF), withBad(async (req, res) => {
   const id = Number(req.params.id)
   const b = req.body || {}
-  const { data: c } = await supabase.from('credits').select('id, number, status, frequency, interval_days, skip_sundays, disbursement_date, notes').eq('id', id).maybeSingle()
+  const lender = req.user.role === 'prestamista'
+  let q = supabase.from('credits').select(CREDIT_EDIT_COLS).eq('id', id)
+  if (lender) q = q.eq('lender_id', req.user.id)
+  const { data: c } = await q.maybeSingle()
   if (!c) return fail(res, 'Crédito no encontrado', 404)
   if (c.status === 'anulado') return fail(res, 'El crédito está anulado; no se puede editar', 400)
   const skipSundays = b.skipSundays === undefined ? c.skip_sundays : Boolean(b.skipSundays)
-  let changes = []
-  if (b.dates) {
-    if (c.status !== 'activo') return fail(res, `El crédito está ${c.status}; sus fechas ya no se pueden cambiar`, 400)
-    const { data: inst } = await supabase.from('installments').select('id, number, due_date, status').eq('credit_id', id).order('number')
-    const r = rescheduleDates({ installments: inst, fromNumber: b.dates.fromNumber, newDate: b.dates.newDate, mode: b.dates.mode === 'una' ? 'una' : 'siguientes',
-      frequency: c.frequency, customDays: c.interval_days, skipSundays, disbursementDate: c.disbursement_date })
-    if (r.error) return fail(res, r.error, 400)
-    changes = r.changes
-  }
-  const notesChanged = b.notes !== undefined && (clean(b.notes) || null) !== (c.notes || null)
-  const sundaysChanged = skipSundays !== c.skip_sundays
+  const changes = b.dates ? await planChanges(c, b.dates, skipSundays) : []
   if (b.preview) return res.send({ changes })
-  if (!changes.length && !notesChanged && !sundaysChanged) return fail(res, 'No hay cambios para guardar', 400)
   const reason = clean(b.reason)
-  if (!reason || reason.length < 5) return fail(res, 'Escribe el motivo del cambio (mínimo 5 letras): queda en la bitácora', 400)
-  const p = { org_id: currentOrg(), credit_id: id, changes: changes.map((x) => ({ id: x.id, due: x.to })) }
-  if (sundaysChanged) p.skip_sundays = skipSundays
-  if (notesChanged) p.notes = clean(b.notes) || ''
-  const { error } = await supabase.rpc('edit_credit', { p })
-  if (error) return error.code === 'P0001' ? fail(res, error.message, 400) : fail(res, error)
-  await audit(req, 'editar', 'credito', id, {
-    number: c.number, reason,
-    dates: changes.slice(0, 120).map((x) => ({ n: x.number, from: x.from, to: x.to })), moved: changes.length,
-    mode: b.dates?.mode === 'una' ? 'una' : b.dates ? 'siguientes' : null,
-    ...(sundaysChanged ? { skipSundays: { from: c.skip_sundays, to: skipSundays } } : {}),
-    ...(notesChanged ? { notes: { from: c.notes || null, to: clean(b.notes) || null } } : {})
-  })
+  const needReason = () => (!reason || reason.length < 5 ? 'Escribe el motivo del cambio (mínimo 5 letras): queda en la bitácora' : null)
+
+  // Prestamista: solicitud para el administrador (solo fechas y domingos).
+  if (lender) {
+    if (!b.dates) return fail(res, 'Elige la cuota y la nueva fecha', 400)
+    if (!changes.length && skipSundays === c.skip_sundays) return fail(res, 'Las fechas quedan iguales: no hay nada que solicitar', 400)
+    if (needReason()) return fail(res, needReason(), 400)
+    const { data: r, error } = await supabase.from('credit_change_requests').insert({
+      credit_id: c.id, lender_id: c.lender_id, from_number: Number(b.dates.fromNumber), new_date: b.dates.newDate, mode: b.dates.mode === 'una' ? 'una' : 'siguientes',
+      skip_sundays: skipSundays, changes: changes.map((x) => ({ number: x.number, from: x.from, to: x.to })), reason: reason.slice(0, 300), requested_by: req.user.id
+    }).select('id').single()
+    if (error) return error.code === '23505' ? fail(res, 'Este crédito ya tiene una solicitud de cambio pendiente', 409) : fail(res, error)
+    await audit(req, 'solicitar', 'cambio_credito', r.id, { credit: c.id, number: c.number, reason, moved: changes.length, first: changes[0] ? { n: changes[0].number, from: changes[0].from, to: changes[0].to } : null })
+    return res.status(202).send({ requested: true, message: 'Solicitud enviada. El administrador debe aprobar el cambio de fecha.', credit: await detail(req, id) })
+  }
+
+  const notesChanged = b.notes !== undefined && (clean(b.notes) || null) !== (c.notes || null)
+  if (!changes.length && !notesChanged && skipSundays === c.skip_sundays) return fail(res, 'No hay cambios para guardar', 400)
+  if (needReason()) return fail(res, needReason(), 400)
+  await applyEdit(req, c, { changes, skipSundays, notes: b.notes, reason, mode: b.dates?.mode === 'una' ? 'una' : b.dates ? 'siguientes' : null })
   res.send(await detail(req, id))
+}))
+
+// Solicitudes de cambio de fecha: el administrador ve todas; el prestamista, las suyas.
+const CR_STATUS = { pendiente: 'Pendiente', aprobada: 'Aprobada', rechazada: 'Rechazada', cancelada: 'Cancelada' }
+const CR_SELECT = '*, credit:credits(id, number, customer:customers(name, last_name)), lender:users!credit_change_requests_lender_id_fkey(id, name, last_name), requester:users!credit_change_requests_requested_by_fkey(name, last_name), resolver:users!credit_change_requests_resolved_by_fkey(name, last_name)'
+const changeDTO = (r) => ({
+  id: r.id, creditId: r.credit_id, creditNumber: r.credit?.number, customer: fullName(r.credit?.customer), lender: r.lender ? { id: r.lender.id, fullName: fullName(r.lender) } : null,
+  fromNumber: r.from_number, newDate: r.new_date, mode: r.mode, skipSundays: r.skip_sundays, changes: r.changes || [], reason: r.reason,
+  status: r.status, statusLabel: CR_STATUS[r.status], resolution: r.resolution, requestedBy: fullName(r.requester), resolvedBy: fullName(r.resolver), resolvedAt: r.resolved_at, createdAt: r.created_at
+})
+router.get('/solicitudes-cambio-credito', auth(STAFF), h(async (req, res) => {
+  let q = supabase.from('credit_change_requests').select(CR_SELECT).order('created_at', { ascending: false }).limit(200)
+  q = req.user.role === 'prestamista' ? q.eq('lender_id', req.user.id) : bySite(req, q)
+  if (CR_STATUS[req.query.estado]) q = q.eq('status', req.query.estado)
+  if (Number(req.query.credito)) q = q.eq('credit_id', Number(req.query.credito))
+  const { data, error } = await q
+  if (error) throw error
+  res.send(data.map(changeDTO))
+}))
+router.post('/solicitudes-cambio-credito/:id/aprobar', auth(ADMIN), withBad(async (req, res) => {
+  const { data: r } = await supabase.from('credit_change_requests').select(CR_SELECT).eq('id', Number(req.params.id)).maybeSingle()
+  if (!r) return fail(res, 'Solicitud no encontrada', 404)
+  if (r.status !== 'pendiente') return fail(res, `La solicitud ya fue ${r.status}`, 409)
+  const { data: c } = await supabase.from('credits').select(CREDIT_EDIT_COLS).eq('id', r.credit_id).maybeSingle()
+  if (!c) return fail(res, 'Crédito no encontrado', 404)
+  // Se recalcula con las cuotas de hoy (pudo haber pagos desde que se pidió).
+  const changes = await planChanges(c, { fromNumber: r.from_number, newDate: r.new_date, mode: r.mode }, r.skip_sundays)
+  await applyEdit(req, c, { changes, skipSundays: r.skip_sundays, reason: r.reason, mode: r.mode, request: { id: r.id, requestedBy: fullName(r.requester) } })
+  await supabase.from('credit_change_requests').update({ status: 'aprobada', resolution: clean(req.body?.note), resolved_by: req.user.id, resolved_at: new Date().toISOString(), changes: changes.map((x) => ({ number: x.number, from: x.from, to: x.to })) }).eq('id', r.id)
+  const { data: row } = await supabase.from('credit_change_requests').select(CR_SELECT).eq('id', r.id).single()
+  res.send(changeDTO(row))
+}))
+router.post('/solicitudes-cambio-credito/:id/rechazar', auth(STAFF), h(async (req, res) => {
+  const { data: r } = await supabase.from('credit_change_requests').select('id, status, requested_by, credit_id, lender_id').eq('id', Number(req.params.id)).maybeSingle()
+  if (!r) return fail(res, 'Solicitud no encontrada', 404)
+  if (r.status !== 'pendiente') return fail(res, `La solicitud ya fue ${r.status}`, 409)
+  const admin = req.user.role === 'administrador'
+  if (!admin && r.requested_by !== req.user.id) return fail(res, 'Solo quien la pidió puede retirarla', 403)
+  const note = clean(req.body?.note)
+  if (admin && !note) return fail(res, 'Escribe el motivo del rechazo', 400)
+  await supabase.from('credit_change_requests').update({ status: admin ? 'rechazada' : 'cancelada', resolution: note, resolved_by: req.user.id, resolved_at: new Date().toISOString() }).eq('id', r.id)
+  if (admin) await audit(req, 'rechazar', 'cambio_credito', r.id, { credit: r.credit_id, lender: r.lender_id, note })
+  const { data: row } = await supabase.from('credit_change_requests').select(CR_SELECT).eq('id', r.id).single()
+  res.send(changeDTO(row))
 }))
 
 // Portal del cliente: sus créditos con cuotas.
