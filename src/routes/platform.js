@@ -12,6 +12,7 @@ const supabase = require('../db')
 const plan = require('../plan')
 const { JWT_SECRET } = require('../config')
 const { h, fail, clean, EMAIL_RE, PHONE_RE, DOC_RE, HttpError } = require('../http')
+const { docTypesFor, defaultDocType, isValidDocType } = require('../lib/docTypes')
 const { auth, ADMIN, ALL } = require('../auth')
 const { currentOrg, runAsOrg } = require('../tenant')
 const { audit } = require('../audit')
@@ -28,7 +29,7 @@ const intOrNull = (v, min, label) => {
   if (!Number.isInteger(n) || n < min) throw new HttpError(`${label}: escribe un número entero desde ${min} o déjalo vacío para ilimitado`)
   return n
 }
-const countryDTO = (c) => ({ code: c.code, name: c.name, currency: c.currency, currencyName: c.currency_name, locale: c.locale, timezone: c.timezone, phonePrefix: c.phone_prefix, active: c.active, sortOrder: c.sort_order })
+const countryDTO = (c) => ({ code: c.code, name: c.name, currency: c.currency, currencyName: c.currency_name, locale: c.locale, timezone: c.timezone, phonePrefix: c.phone_prefix, active: c.active, sortOrder: c.sort_order, docTypes: docTypesFor(c.code) })
 const featureDTO = (f) => ({ key: f.key, label: f.label, group: f.grp, description: f.description, core: f.core, sortOrder: f.sort_order })
 const planDTO = (p, prices = []) => ({
   id: p.id,
@@ -305,6 +306,7 @@ router.post('/plataforma/organizaciones', pauth, h(async (req, res) => {
   const a = b.admin || {}
   const errs = []
   if (!DOC_RE.test(String(clean(a.identification) || ''))) errs.push('Documento del administrador no válido')
+  if (a.docType && !isValidDocType(a.docType, country?.code)) errs.push('Tipo de documento del administrador no válido para el país')
   if (!clean(a.name)) errs.push('Nombre del administrador requerido')
   if (!/^[a-z0-9._-]{3,30}$/.test(String(clean(a.username) || '').toLowerCase())) errs.push('Usuario del administrador: 3 a 30 letras, números, punto o guion')
   if (clean(a.email) && !EMAIL_RE.test(clean(a.email))) errs.push('Correo del administrador no válido')
@@ -326,6 +328,7 @@ router.post('/plataforma/organizaciones', pauth, h(async (req, res) => {
     must(await supabase.from('app_settings').insert({ org_id: org.id, business_name: org.name, short_name: org.name.slice(0, 20), currency: country.currency, timezone: country.timezone }))
     must(await supabase.from('users').insert({
       org_id: org.id,
+      doc_type: a.docType || defaultDocType(country.code),
       identification: clean(a.identification),
       name: clean(a.name),
       last_name: clean(a.lastName) || '',

@@ -10,6 +10,7 @@ const { currentOrg } = require('../tenant')
 const plan = require('../plan')
 const { h, fail, clean, todayBogota, imageError, PHONE_RE } = require('../http')
 const { bySite } = require('../site')
+const { defaultDocType, isValidDocType } = require('../lib/docTypes')
 const bcrypt = require('bcryptjs')
 const { auth, ADMIN, STAFF, FLEET } = require('../auth')
 const { audit } = require('../audit')
@@ -29,7 +30,7 @@ const DOCS = [['soat_expires', 'SOAT'], ['tecno_expires', 'Técnico-mecánica'],
 
 const DRIVER_COLS = 'id, name, last_name, identification, phone, license_number, license_category, license_expires, active'
 const SELECT = `*, collector:users!vehicles_collector_id_fkey(id, name, last_name, phone), driver:drivers(${DRIVER_COLS})`
-const driverDTO = (d) => (d ? { id: d.id, fullName: fullName(d), identification: d.identification, phone: d.phone, licenseNumber: d.license_number, licenseCategory: d.license_category, licenseExpires: d.license_expires, active: d.active, userId: d.user_id ?? null } : null)
+const driverDTO = (d) => (d ? { id: d.id, fullName: fullName(d), docType: d.doc_type ?? null, identification: d.identification, phone: d.phone, licenseNumber: d.license_number, licenseCategory: d.license_category, licenseExpires: d.license_expires, active: d.active, userId: d.user_id ?? null } : null)
 
 // Alertas: documentos vencidos o por vencer (30 días) y cambio de aceite.
 const alertsOf = (v, lastOil, today) => {
@@ -289,9 +290,10 @@ router.post('/vehiculos/:id/mantenimientos', auth(STAFF), h(async (req, res) => 
 // ---------- Conductores ----------
 const driverRow = (b) => {
   const r = {
-    name: clean(b.name), last_name: clean(b.lastName), identification: clean(b.identification), phone: clean(b.phone), address: clean(b.address),
+    name: clean(b.name), last_name: clean(b.lastName), identification: clean(b.identification), doc_type: clean(b.docType), phone: clean(b.phone), address: clean(b.address),
     license_number: clean(b.licenseNumber), license_category: clean(b.licenseCategory), license_expires: clean(b.licenseExpires), notes: clean(b.notes), active: b.active !== false
   }
+  if (!r.doc_type) delete r.doc_type
   if (b.licensePhotoUrl !== undefined) r.license_photo_url = clean(b.licensePhotoUrl)
   if (b.photoUrl !== undefined) r.photo_url = clean(b.photoUrl)
   if (b.idPhotoUrl !== undefined) r.id_photo_url = clean(b.idPhotoUrl)
@@ -328,9 +330,19 @@ router.get('/conductores', auth(STAFF), h(async (req, res) => {
   }))
 }))
 
+// Tipo de documento según el país del negocio (se acepta el que ya tenía guardado).
+const docTypeError = async (docType, current = null) => {
+  const country = (await plan.ensure(currentOrg())).country?.code || null
+  return docType && !isValidDocType(docType, country, current) ? 'Tipo de documento no válido para el país del negocio' : null
+}
+const orgDefaultDocType = async () => defaultDocType((await plan.ensure(currentOrg())).country?.code)
+
 router.post('/conductores', auth(ADMIN), h(async (req, res) => {
   const { r, e } = driverRow(req.body || {})
+  const de = await docTypeError(r.doc_type)
+  if (de) e.push(de)
   if (e.length) return fail(res, e.join('. '), 400)
+  if (!r.doc_type) r.doc_type = await orgDefaultDocType()
   await plan.checkLimit(currentOrg(), 'drivers')
   const { data, error } = await supabase.from('drivers').insert(r).select('*').single()
   if (error) return error.code === '23505' ? fail(res, 'Ya existe un conductor con ese documento', 400) : fail(res, error)
@@ -340,6 +352,11 @@ router.post('/conductores', auth(ADMIN), h(async (req, res) => {
 
 router.put('/conductores/:id', auth(ADMIN), h(async (req, res) => {
   const { r, e } = driverRow(req.body || {})
+  if (r.doc_type) {
+    const { data: cur } = await supabase.from('drivers').select('doc_type').eq('id', Number(req.params.id)).maybeSingle()
+    const de = await docTypeError(r.doc_type, cur?.doc_type ?? null)
+    if (de) e.push(de)
+  }
   if (e.length) return fail(res, e.join('. '), 400)
   const { data, error } = await supabase.from('drivers').update(r).eq('id', Number(req.params.id)).select('*').maybeSingle()
   if (error) return error.code === '23505' ? fail(res, 'Ya existe un conductor con ese documento', 400) : fail(res, error)
@@ -394,7 +411,7 @@ router.post('/conductores/:id/acceso', auth(ADMIN), h(async (req, res) => {
   const username = clean(b.username)?.toLowerCase()
   if (!username || !/^[a-z0-9._-]{3,30}$/.test(username)) return fail(res, 'El usuario solo admite letras, números, punto, guion y guion bajo (3 a 30)', 400)
   // KU-024: la contraseña inicial es el número de documento; el conductor la cambia en "Mi perfil".
-  const row = { identification: d.identification, name: d.name, last_name: d.last_name || '', phone: d.phone, username, role: 'conductor', active: true }
+  const row = { identification: d.identification, doc_type: d.doc_type, name: d.name, last_name: d.last_name || '', phone: d.phone, username, role: 'conductor', active: true }
   if (!same || b.resetPassword) row.password_hash = await bcrypt.hash(String(d.identification), 10)
   const { data: u, error } = same
     ? await supabase.from('users').update(row).eq('id', same.id).select('id, username').single()

@@ -7,11 +7,15 @@ const { audit } = require('../audit')
 const { currentOrg } = require('../tenant')
 const plan = require('../plan')
 const { driverRow } = require('./vehicles')
+const { defaultDocType, isValidDocType } = require('../lib/docTypes')
 
 const router = express.Router()
 
-const validate = (b, { creating }) => {
+const orgCountry = async () => (await plan.ensure(currentOrg())).country?.code || null
+
+const validate = (b, { creating, country = null, currentDocType = null }) => {
   const errors = []
+  if (b.docType && !isValidDocType(b.docType, country, currentDocType)) errors.push('Tipo de documento no válido para el país del negocio')
   for (const [k, label] of [['identification', 'Identificación'], ['name', 'Nombre'], ['username', 'Usuario'], ['role', 'Rol']]) {
     if (!clean(b[k])) errors.push(`${label} es requerido`)
   }
@@ -63,7 +67,7 @@ const prepareDriver = async (b, userId, current = {}) => {
   const d = b.driver || {}
   const pick = (k, col) => (d[k] !== undefined && d[k] !== '' ? d[k] : same?.[col])
   const { r, e } = driverRow({
-    name: b.name, lastName: b.lastName, identification: b.identification, phone: clean(b.phone) || same?.phone,
+    name: b.name, lastName: b.lastName, identification: b.identification, docType: b.docType || same?.doc_type, phone: clean(b.phone) || same?.phone,
     address: same?.address, notes: same?.notes, active: true,
     licenseNumber: pick('licenseNumber', 'license_number'), licenseCategory: pick('licenseCategory', 'license_category'), licenseExpires: pick('licenseExpires', 'license_expires'),
     licensePhotoUrl: d.licensePhotoUrl !== undefined ? d.licensePhotoUrl : same?.license_photo_url,
@@ -124,7 +128,8 @@ router.post('/usuarios', auth(ADMIN), h(async (req, res) => {
   const b = req.body || {}
   const { role, extra } = profilesFrom(b)
   b.role = role
-  const errors = validate(b, { creating: true })
+  const country = await orgCountry()
+  const errors = validate(b, { creating: true, country })
   const missing = missingPhotos(b)
   if (missing.length) errors.push(`Falta ${missing.join(', ')}`)
   if (errors.length) return fail(res, errors.join('. '), 400)
@@ -133,6 +138,7 @@ router.post('/usuarios', auth(ADMIN), h(async (req, res) => {
   const wantsDriver = role === 'conductor' || extra.includes('conductor')
   const driverPrep = wantsDriver ? await prepareDriver(b, null) : null
   const { data, error } = await supabase.from('users').insert({
+    doc_type: b.docType || defaultDocType(country),
     identification: clean(b.identification),
     name: clean(b.name),
     last_name: clean(b.lastName) || '',
@@ -158,10 +164,10 @@ router.put('/usuarios/:id', auth(ADMIN), h(async (req, res) => {
   const b = req.body || {}
   const { role, extra } = profilesFrom(b)
   b.role = role
-  const errors = validate(b, { creating: false })
-  if (errors.length) return fail(res, errors.join('. '), 400)
-  const { data: current } = await supabase.from('users').select('id, role, extra_roles, is_lender, active, identification, photo_url, id_photo_url, id_photo_back_url').eq('id', id).maybeSingle()
+  const { data: current } = await supabase.from('users').select('id, role, extra_roles, is_lender, active, doc_type, identification, photo_url, id_photo_url, id_photo_back_url').eq('id', id).maybeSingle()
   if (!current) return fail(res, 'Usuario no encontrado', 404)
+  const errors = validate(b, { creating: false, country: await orgCountry(), currentDocType: current.doc_type })
+  if (errors.length) return fail(res, errors.join('. '), 400)
   const missing = missingPhotos(b, current)
   if (missing.length) return fail(res, `Falta ${missing.join(', ')}`, 400)
   // Reactivar o cambiar de rol cuenta contra el límite del plan.
@@ -173,6 +179,7 @@ router.put('/usuarios/:id', auth(ADMIN), h(async (req, res) => {
   const losesAdmin = current.role === 'administrador' && current.active && (b.role !== 'administrador' || b.active === false)
   if (losesAdmin && (await activeAdmins(id)) === 0) return fail(res, 'Debe quedar al menos un administrador activo', 400)
   const patch = {
+    doc_type: b.docType || current.doc_type,
     identification: clean(b.identification),
     name: clean(b.name),
     last_name: clean(b.lastName) || '',
