@@ -34,6 +34,7 @@ const KINDS = {
   'renovar:credito': ['credito', 'Crédito renovado'],
   'aprobar:credito': ['credito', 'Solicitud aprobada'],
   'anular:credito': ['credito', 'Crédito anulado'],
+  'editar:credito': ['credito', 'Crédito editado'],
   'solicitar:credito': ['credito', 'Solicitud de crédito'],
   'cancelar:solicitud_credito': ['credito', 'Solicitud cancelada'],
   'rechazar:solicitud_credito': ['credito', 'Solicitud rechazada'],
@@ -84,7 +85,7 @@ router.get('/bitacora', auth(ADMIN), h(async (req, res) => {
     base().in('user_id', ids),
     base().eq('entity', 'prestamista').in('entity_id', ids.map(String)),
     // Lo que el administrador anuló o resolvió sobre la plata del prestamista (se filtra luego por prestamista).
-    base().not('user_id', 'in', `(${ids.join(',')})`).in('entity', ['pago', 'gasto', 'traslado_caja', 'credito']).in('action', ['anular', 'entregar', 'rechazar'])
+    base().not('user_id', 'in', `(${ids.join(',')})`).in('entity', ['pago', 'gasto', 'traslado_caja', 'credito']).in('action', ['anular', 'entregar', 'rechazar', 'editar'])
   ])
   if (error) throw error
   const seen = new Set()
@@ -145,6 +146,20 @@ router.get('/bitacora', auth(ADMIN), h(async (req, res) => {
       if (x) {
         Object.assign(e, { amount: n(x.disbursed_amount ?? x.principal), lenderId: x.lender_id ?? e.lenderId, ref: x.number ? (typeof x.number === 'number' ? `#${x.number}` : x.number) : null, text: `${fullName(x.customer)}${x.kind ? ` · ${x.kind}` : ''}` })
         if (a.action === 'anular') e.flags.push('Crédito anulado')
+        if (a.action === 'editar') {
+          const d = a.detail || {}
+          const first = d.dates?.[0]
+          const fmt = (iso) => (iso ? iso.split('-').reverse().join('/') : '—')
+          const parts = [
+            first && `cuota ${first.n}: ${fmt(first.from)} → ${fmt(first.to)}${d.moved > 1 ? ` (y ${d.moved - 1} siguiente${d.moved - 1 === 1 ? '' : 's'})` : ''}`,
+            d.skipSundays && (d.skipSundays.to ? 'ya no cobra los domingos' : 'cobra también los domingos'),
+            d.notes && 'notas actualizadas',
+            d.reason && `motivo: ${d.reason}`
+          ].filter(Boolean)
+          e.amount = null
+          e.text = `${e.text} · ${parts.join(' · ')}`
+          e.flags.push('Crédito editado')
+        }
       }
     } else if (a.entity === 'traslado_caja') {
       const x = find(trs, a.entity_id)

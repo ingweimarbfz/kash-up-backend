@@ -177,4 +177,30 @@ const buildSchedule = (p) => {
   }
 }
 
-module.exports = { buildSchedule, roundStepFor, suggestFirstDue, dueDates, intervalDays, FREQUENCIES, METHODS, parseISO, toISO }
+// Cambia la fecha de cobro de una cuota de un crédito ya creado.
+// · mode 'siguientes': la cuota elegida pasa a newDate y las siguientes se recorren con la misma frecuencia.
+// · mode 'una': solo cambia esa cuota (debe quedar entre la anterior y la siguiente).
+// installments: [{ id, number, due_date, status }]. Devuelve { changes: [{ id, number, from, to }] } o { error }.
+const rescheduleDates = ({ installments, fromNumber, newDate, mode = 'siguientes', frequency, customDays, skipSundays, disbursementDate }) => {
+  const ISO_RE = /^\d{4}-\d{2}-\d{2}$/
+  if (!ISO_RE.test(String(newDate || ''))) return { error: 'Elige la nueva fecha de cobro' }
+  const list = (installments || []).filter((i) => i.status !== 'anulada').sort((a, b) => a.number - b.number)
+  const target = list.find((i) => i.number === Number(fromNumber))
+  if (!target) return { error: 'Elige la cuota que quieres mover' }
+  if (target.status === 'pagada') return { error: `La cuota ${target.number} ya está pagada; no se puede mover` }
+  if (disbursementDate && newDate <= disbursementDate) return { error: `La fecha debe ser posterior al desembolso (${disbursementDate})` }
+  const prev = list.filter((i) => i.number < target.number).pop()
+  if (prev && newDate <= prev.due_date) return { error: `La fecha debe ser posterior a la cuota ${prev.number} (${prev.due_date})` }
+  if (mode === 'una') {
+    const next = list.find((i) => i.number > target.number)
+    if (next && newDate >= next.due_date) return { error: `La fecha debe ser anterior a la cuota ${next.number} (${next.due_date}). Para mover también las siguientes, elige "Mover también las siguientes"` }
+    if (skipSundays && isSunday(parseISO(newDate))) return { error: 'Esa fecha es domingo y el crédito no cobra los domingos' }
+    return { changes: target.due_date === newDate ? [] : [{ id: target.id, number: target.number, from: target.due_date, to: newDate }] }
+  }
+  const rest = list.filter((i) => i.number >= target.number)
+  const dates = dueDates({ frequency, customDays, count: rest.length, firstDueDate: newDate, skipSundays })
+  const changes = rest.map((i, k) => ({ id: i.id, number: i.number, from: i.due_date, to: dates[k] })).filter((c) => c.from !== c.to)
+  return { changes }
+}
+
+module.exports = { rescheduleDates, buildSchedule, roundStepFor, suggestFirstDue, dueDates, intervalDays, FREQUENCIES, METHODS, parseISO, toISO }
