@@ -336,7 +336,7 @@ const detail = async (req, id) => {
     supabase.from('payments').select('id, number, kind, amount, method, reference, paid_on, note, status, void_reason, created_at, user:users!payments_user_id_fkey(name, last_name)').eq('credit_id', id).order('id', { ascending: false }),
     supabase.from('credits').select('id, number, status, renewed_from_id').or(`id.eq.${c.renewed_from_id || 0},renewed_from_id.eq.${id}`)
   ])
-  const { data: pend } = await supabase.from('credit_change_requests').select('id, from_number, new_date, mode, changes, reason, created_at, requester:users!credit_change_requests_requested_by_fkey(name, last_name)').eq('credit_id', id).eq('status', 'pendiente').maybeSingle()
+  const { data: pend } = await supabase.from('credit_change_requests').select('id, kind, topic, from_number, new_date, mode, changes, reason, created_at, requester:users!credit_change_requests_requested_by_fkey(name, last_name)').eq('credit_id', id).eq('status', 'pendiente').maybeSingle()
   const today = todayBogota()
   const from = (links || []).find((k) => k.id === c.renewed_from_id)
   const renewedBy = (links || []).find((k) => k.renewed_from_id === id && k.status !== 'anulado')
@@ -352,7 +352,7 @@ const detail = async (req, id) => {
     renewedFrom: from ? { id: from.id, number: from.number } : null, payoffAmount: Number(c.payoff_amount || 0),
     renewedBy: renewedBy ? { id: renewedBy.id, number: renewedBy.number } : null,
     waivedAmount: Number(bal[id]?.waived_amount ?? 0),
-    pendingChange: pend ? { id: pend.id, fromNumber: pend.from_number, newDate: pend.new_date, mode: pend.mode, changes: pend.changes || [], reason: pend.reason, requestedBy: fullName(pend.requester), createdAt: pend.created_at } : null,
+    pendingChange: pend ? { id: pend.id, kind: pend.kind || 'fecha', topic: pend.topic, topicLabel: pend.topic ? CR_TOPICS[pend.topic] : 'Cambio de fecha', fromNumber: pend.from_number, newDate: pend.new_date, mode: pend.mode, changes: pend.changes || [], reason: pend.reason, requestedBy: fullName(pend.requester), createdAt: pend.created_at } : null,
     payments: (pays || []).map((p) => ({
       id: p.id, number: `RC-${String(p.number).padStart(4, '0')}`, kind: p.kind, amount: Number(p.amount), method: p.method, reference: p.reference, paidOn: p.paid_on, note: p.note,
       status: p.status, voidReason: p.void_reason, createdAt: p.created_at, user: fullName(p.user)
@@ -389,6 +389,11 @@ router.post('/creditos/:id/anular', auth(ADMIN), h(async (req, res) => {
 // · Prestamista: no edita directo; envía una solicitud de cambio de fecha que el administrador aprueba.
 // · Con preview: true devuelve los cambios sin guardar. El motivo es obligatorio y queda en la bitácora.
 // ---------------------------------------------------------------------
+const CR_TOPICS = { valor: 'Cambiar el valor', interes: 'Cambiar el interés', cuotas: 'Cambiar el número de cuotas', otro: 'Otro cambio' }
+const hasPayments = async (creditId) => {
+  const { count } = await supabase.from('payments').select('id', { count: 'exact', head: true }).eq('credit_id', creditId).eq('status', 'aplicado')
+  return (count || 0) > 0
+}
 const CREDIT_EDIT_COLS = 'id, number, status, lender_id, frequency, interval_days, skip_sundays, disbursement_date, notes'
 const planChanges = async (c, dates, skipSundays) => {
   if (c.status !== 'activo') throw new Bad(`El crédito está ${c.status}; sus fechas ya no se pueden cambiar`)
@@ -425,6 +430,24 @@ router.put('/creditos/:id', auth(STAFF), withBad(async (req, res) => {
   const { data: c } = await q.maybeSingle()
   if (!c) return fail(res, 'Crédito no encontrado', 404)
   if (c.status === 'anulado') return fail(res, 'El crédito está anulado; no se puede editar', 400)
+
+  // Prestamista: otro cambio (valor, interés, cuotas…). Solo si el crédito no tiene pagos; el administrador
+  // la rechaza y pide anular el crédito y crear uno nuevo con los datos correctos.
+  if (lender && b.kind === 'otro') {
+    const topic = CR_TOPICS[b.topic] ? b.topic : null
+    if (!topic) return fail(res, 'Elige qué quieres cambiar', 400)
+    const why = clean(b.reason)
+    if (!why || why.length < 5) return fail(res, 'Explica el cambio que necesitas (mínimo 5 letras)', 400)
+    if (c.status !== 'activo') return fail(res, `El crédito está ${c.status}; no se puede pedir el cambio`, 400)
+    if (await hasPayments(c.id)) return fail(res, 'El crédito ya tiene pagos registrados: solo se puede pedir cambio de fecha', 400)
+    const { data: r, error } = await supabase.from('credit_change_requests').insert({
+      credit_id: c.id, lender_id: c.lender_id, kind: 'otro', topic, reason: why.slice(0, 300), requested_by: req.user.id
+    }).select('id').single()
+    if (error) return error.code === '23505' ? fail(res, 'Este crédito ya tiene una solicitud de cambio pendiente', 409) : fail(res, error)
+    await audit(req, 'solicitar', 'cambio_credito', r.id, { credit: c.id, number: c.number, kind: 'otro', topic, reason: why })
+    return res.status(202).send({ requested: true, message: 'Solicitud enviada al administrador.', credit: await detail(req, id) })
+  }
+
   const skipSundays = b.skipSundays === undefined ? c.skip_sundays : Boolean(b.skipSundays)
   const changes = b.dates ? await planChanges(c, b.dates, skipSundays) : []
   if (b.preview) return res.send({ changes })
@@ -452,11 +475,12 @@ router.put('/creditos/:id', auth(STAFF), withBad(async (req, res) => {
   res.send(await detail(req, id))
 }))
 
-// Solicitudes de cambio de fecha: el administrador ve todas; el prestamista, las suyas.
+// Solicitudes de cambio: el administrador ve todas; el prestamista, las suyas.
 const CR_STATUS = { pendiente: 'Pendiente', aprobada: 'Aprobada', rechazada: 'Rechazada', cancelada: 'Cancelada' }
 const CR_SELECT = '*, credit:credits(id, number, customer:customers(name, last_name)), lender:users!credit_change_requests_lender_id_fkey(id, name, last_name), requester:users!credit_change_requests_requested_by_fkey(name, last_name), resolver:users!credit_change_requests_resolved_by_fkey(name, last_name)'
 const changeDTO = (r) => ({
   id: r.id, creditId: r.credit_id, creditNumber: r.credit?.number, customer: fullName(r.credit?.customer), lender: r.lender ? { id: r.lender.id, fullName: fullName(r.lender) } : null,
+  kind: r.kind || 'fecha', topic: r.topic, topicLabel: r.topic ? CR_TOPICS[r.topic] : 'Cambio de fecha',
   fromNumber: r.from_number, newDate: r.new_date, mode: r.mode, skipSundays: r.skip_sundays, changes: r.changes || [], reason: r.reason,
   status: r.status, statusLabel: CR_STATUS[r.status], resolution: r.resolution, requestedBy: fullName(r.requester), resolvedBy: fullName(r.resolver), resolvedAt: r.resolved_at, createdAt: r.created_at
 })
@@ -473,6 +497,7 @@ router.post('/solicitudes-cambio-credito/:id/aprobar', auth(ADMIN), withBad(asyn
   const { data: r } = await supabase.from('credit_change_requests').select(CR_SELECT).eq('id', Number(req.params.id)).maybeSingle()
   if (!r) return fail(res, 'Solicitud no encontrada', 404)
   if (r.status !== 'pendiente') return fail(res, `La solicitud ya fue ${r.status}`, 409)
+  if (r.kind === 'otro') return fail(res, 'Este cambio no se aplica editando el crédito: recházalo y pide anular el crédito y crear uno nuevo', 400)
   const { data: c } = await supabase.from('credits').select(CREDIT_EDIT_COLS).eq('id', r.credit_id).maybeSingle()
   if (!c) return fail(res, 'Crédito no encontrado', 404)
   // Se recalcula con las cuotas de hoy (pudo haber pagos desde que se pidió).
@@ -483,7 +508,7 @@ router.post('/solicitudes-cambio-credito/:id/aprobar', auth(ADMIN), withBad(asyn
   res.send(changeDTO(row))
 }))
 router.post('/solicitudes-cambio-credito/:id/rechazar', auth(STAFF), h(async (req, res) => {
-  const { data: r } = await supabase.from('credit_change_requests').select('id, status, requested_by, credit_id, lender_id').eq('id', Number(req.params.id)).maybeSingle()
+  const { data: r } = await supabase.from('credit_change_requests').select('id, status, requested_by, credit_id, lender_id, kind, topic').eq('id', Number(req.params.id)).maybeSingle()
   if (!r) return fail(res, 'Solicitud no encontrada', 404)
   if (r.status !== 'pendiente') return fail(res, `La solicitud ya fue ${r.status}`, 409)
   const admin = req.user.role === 'administrador'
@@ -491,7 +516,7 @@ router.post('/solicitudes-cambio-credito/:id/rechazar', auth(STAFF), h(async (re
   const note = clean(req.body?.note)
   if (admin && !note) return fail(res, 'Escribe el motivo del rechazo', 400)
   await supabase.from('credit_change_requests').update({ status: admin ? 'rechazada' : 'cancelada', resolution: note, resolved_by: req.user.id, resolved_at: new Date().toISOString() }).eq('id', r.id)
-  if (admin) await audit(req, 'rechazar', 'cambio_credito', r.id, { credit: r.credit_id, lender: r.lender_id, note })
+  if (admin) await audit(req, 'rechazar', 'cambio_credito', r.id, { credit: r.credit_id, lender: r.lender_id, note, kind: r.kind || 'fecha', topic: r.topic })
   const { data: row } = await supabase.from('credit_change_requests').select(CR_SELECT).eq('id', r.id).single()
   res.send(changeDTO(row))
 }))
