@@ -9,6 +9,7 @@ const supabase = require('../db')
 const { currentOrg } = require('../tenant')
 const plan = require('../plan')
 const { h, fail, clean, todayBogota, imageError, PHONE_RE } = require('../http')
+const { isValidPhone, phoneMessage } = require('../lib/phones')
 const { bySite } = require('../site')
 const { defaultDocType, isValidDocType } = require('../lib/docTypes')
 const bcrypt = require('bcryptjs')
@@ -288,7 +289,7 @@ router.post('/vehiculos/:id/mantenimientos', auth(STAFF), h(async (req, res) => 
 }))
 
 // ---------- Conductores ----------
-const driverRow = (b) => {
+const driverRow = (b, country = null) => {
   const r = {
     name: clean(b.name), last_name: clean(b.lastName), identification: clean(b.identification), doc_type: clean(b.docType), phone: clean(b.phone), address: clean(b.address),
     license_number: clean(b.licenseNumber), license_category: clean(b.licenseCategory), license_expires: clean(b.licenseExpires), notes: clean(b.notes), active: b.active !== false
@@ -301,7 +302,7 @@ const driverRow = (b) => {
   const e = []
   if (!r.name) e.push('El nombre es obligatorio')
   if (!r.identification || !/^[0-9A-Za-z.-]{5,15}$/.test(r.identification)) e.push('Número de documento no válido')
-  if (!r.phone || !PHONE_RE.test(r.phone)) e.push('Celular no válido')
+  if (!r.phone || !isValidPhone(r.phone, country)) e.push(phoneMessage(country))
   if (r.license_number) r.license_number = r.license_number.toUpperCase()
   if (!r.license_number) e.push('El número de la licencia es obligatorio')
   else if (!/^[A-Z0-9]{3,20}$/.test(r.license_number)) e.push('El número de la licencia solo admite letras y números (3 a 20), sin espacios ni caracteres especiales')
@@ -338,7 +339,7 @@ const docTypeError = async (docType, current = null) => {
 const orgDefaultDocType = async () => defaultDocType((await plan.ensure(currentOrg())).country?.code)
 
 router.post('/conductores', auth(ADMIN), h(async (req, res) => {
-  const { r, e } = driverRow(req.body || {})
+  const { r, e } = driverRow(req.body || {}, (await plan.ensure(currentOrg())).country?.code)
   const de = await docTypeError(r.doc_type)
   if (de) e.push(de)
   if (e.length) return fail(res, e.join('. '), 400)
@@ -351,7 +352,7 @@ router.post('/conductores', auth(ADMIN), h(async (req, res) => {
 }))
 
 router.put('/conductores/:id', auth(ADMIN), h(async (req, res) => {
-  const { r, e } = driverRow(req.body || {})
+  const { r, e } = driverRow(req.body || {}, (await plan.ensure(currentOrg())).country?.code)
   if (r.doc_type) {
     const { data: cur } = await supabase.from('drivers').select('doc_type').eq('id', Number(req.params.id)).maybeSingle()
     const de = await docTypeError(r.doc_type, cur?.doc_type ?? null)

@@ -2,6 +2,7 @@ const express = require('express')
 const bcrypt = require('bcryptjs')
 const supabase = require('../db')
 const { h, fail, clean, EMAIL_RE, PHONE_RE, DOC_RE, NAME_RE, imageError, HttpError } = require('../http')
+const { isValidPhone, phoneMessage } = require('../lib/phones')
 const { auth, ADMIN, ROLES, PROFILE_ORDER, USER_COLUMNS, toUserDTO } = require('../auth')
 const { audit } = require('../audit')
 const { currentOrg } = require('../tenant')
@@ -25,7 +26,7 @@ const validate = (b, { creating, country = null, currentDocType = null }) => {
   if (clean(b.lastName) && !NAME_RE.test(clean(b.lastName))) errors.push('Los apellidos solo admiten letras')
   if (clean(b.username) && !/^[a-z0-9._-]{3,30}$/i.test(clean(b.username))) errors.push('El usuario solo admite letras, números, punto, guion y guion bajo (3 a 30)')
   if (clean(b.email) && !EMAIL_RE.test(clean(b.email))) errors.push('Correo no válido')
-  if (clean(b.phone) && !PHONE_RE.test(clean(b.phone))) errors.push('Teléfono no válido (7 a 10 dígitos)')
+  if (clean(b.phone) && !isValidPhone(clean(b.phone), country)) errors.push(phoneMessage(country))
   if (!creating && b.password && b.role !== 'cliente' && b.password.length < 8) errors.push('La contraseña debe tener al menos 8 caracteres')
   for (const [k, kb] of [['avatarUrl', 200], ['photoUrl', 1500], ['idPhotoUrl', 1500], ['idPhotoBackUrl', 1500]]) {
     const e = imageError(b[k], kb)
@@ -66,6 +67,7 @@ const prepareDriver = async (b, userId, current = {}) => {
   const same = linked || (await supabase.from('drivers').select('*').eq('identification', clean(b.identification)).maybeSingle()).data
   const d = b.driver || {}
   const pick = (k, col) => (d[k] !== undefined && d[k] !== '' ? d[k] : same?.[col])
+  const country = await orgCountry()
   const { r, e } = driverRow({
     name: b.name, lastName: b.lastName, identification: b.identification, docType: b.docType || same?.doc_type, phone: clean(b.phone) || same?.phone,
     address: same?.address, notes: same?.notes, active: true,
@@ -74,7 +76,7 @@ const prepareDriver = async (b, userId, current = {}) => {
     photoUrl: b.photoUrl || current.photo_url || same?.photo_url,
     idPhotoUrl: b.idPhotoUrl || current.id_photo_url || same?.id_photo_url,
     idPhotoBackUrl: b.idPhotoBackUrl || current.id_photo_back_url || same?.id_photo_back_url
-  })
+  }, country)
   if (!clean(b.phone) && !same?.phone) e.unshift('El celular es obligatorio para el perfil de conductor')
   if (e.length) throw new HttpError(`Perfil de conductor: ${[...new Set(e)].join('. ')}`)
   if (same && same.user_id && same.user_id !== userId) throw new HttpError('Ese conductor ya tiene acceso con otro usuario')
