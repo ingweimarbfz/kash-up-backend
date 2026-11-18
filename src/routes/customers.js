@@ -2,15 +2,16 @@ const express = require('express')
 const bcrypt = require('bcryptjs')
 const supabase = require('../db')
 const { h, fail, clean, num, EMAIL_RE, PHONE_RE, DOC_RE, imageError, todayBogota } = require('../http')
+const { isValidPhone, phoneMessage } = require('../lib/phones')
 const { auth, ADMIN, STAFF, toUserDTO, USER_COLUMNS } = require('../auth')
 const { audit } = require('../audit')
 const { score } = require('../lib/scoring')
 const { currentOrg } = require('../tenant')
 const plan = require('../plan')
 const { bySite } = require('../site')
+const { defaultDocType, isValidDocType } = require('../lib/docTypes')
 
 const router = express.Router()
-const DOC_TYPES = ['CC', 'CE', 'TI', 'PA', 'PPT', 'NIT']
 const LIST_COLUMNS = 'id, doc_type, identification, name, last_name, phone, address, neighborhood, city, photo_thumb, utility_bill_at, lender_id, user_id, status, created_at, lender:users!customers_lender_id_fkey(id, name, last_name)'
 
 const fullName = (x) => (x ? `${x.name} ${x.last_name || ''}`.trim() : null)
@@ -58,15 +59,18 @@ const loadOne = async (req, id) => {
   return data
 }
 
-const validate = (b, isNew = false) => {
+// País del negocio: define los tipos de documento que se aceptan.
+const orgCountry = async () => (await plan.ensure(currentOrg())).country?.code || null
+
+const validate = (b, isNew = false, country = null, currentDocType = null) => {
   const errors = []
-  if (!DOC_TYPES.includes(b.docType || 'CC')) errors.push('Tipo de documento inválido')
+  if (b.docType && !isValidDocType(b.docType, country, currentDocType)) errors.push('Tipo de documento no válido para el país del negocio')
   if (!clean(b.identification)) errors.push('La identificación es requerida')
   else if (!DOC_RE.test(clean(b.identification))) errors.push('Identificación no válida')
   if (!clean(b.name)) errors.push('El nombre es requerido')
   if (!clean(b.phone)) errors.push('El celular es requerido')
-  else if (!PHONE_RE.test(clean(b.phone))) errors.push('Celular no válido (7 a 10 dígitos)')
-  if (clean(b.phone2) && !PHONE_RE.test(clean(b.phone2))) errors.push('Teléfono 2 no válido')
+  else if (!isValidPhone(clean(b.phone), country)) errors.push(phoneMessage(country))
+  if (clean(b.phone2) && !isValidPhone(clean(b.phone2), country)) errors.push(phoneMessage(country, 'Teléfono 2'))
   if (clean(b.email) && !EMAIL_RE.test(clean(b.email))) errors.push('Correo no válido')
   if (!clean(b.address)) errors.push('La dirección es requerida')
   if (!clean(b.photoUrl)) errors.push('La foto del cliente es obligatoria')
@@ -81,9 +85,9 @@ const validate = (b, isNew = false) => {
   return errors
 }
 
-const rowFrom = (b) => {
+const rowFrom = (b, country = null) => {
   const row = {
-  doc_type: b.docType || 'CC',
+  doc_type: b.docType || defaultDocType(country),
   identification: clean(b.identification),
   name: clean(b.name),
   last_name: clean(b.lastName) || '',
@@ -177,12 +181,13 @@ router.get('/clientes/:id', auth(STAFF), h(async (req, res) => {
 
 router.post('/clientes', auth(STAFF), h(async (req, res) => {
   const b = req.body || {}
-  const errors = validate(b, true)
+  const country = await orgCountry()
+  const errors = validate(b, true, country)
   if (errors.length) return fail(res, errors.join('. '), 400)
   await plan.checkLimit(currentOrg(), 'customers')
   let lenderId = req.user.role === 'prestamista' ? req.user.id : await checkLender(b.lenderId)
   if (lenderId === undefined) return fail(res, 'El prestamista asignado no existe o está inactivo', 400)
-  const row = { ...rowFrom(b), utility_bill_at: new Date().toISOString(), lender_id: lenderId, created_by: req.user.id }
+  const row = { ...rowFrom(b, country), utility_bill_at: new Date().toISOString(), lender_id: lenderId, created_by: req.user.id }
   if (req.user.role === 'administrador' && b.status) row.status = b.status
   const { data, error } = await supabase.from('customers').insert(row).select('id').single()
   if (error) return dupMessage(error) ? fail(res, dupMessage(error), 409) : fail(res, error)
@@ -195,9 +200,10 @@ router.put('/clientes/:id', auth(STAFF), h(async (req, res) => {
   const current = await loadOne(req, id)
   if (!current) return fail(res, 'Cliente no encontrado', 404)
   const b = req.body || {}
-  const errors = validate(b)
+  const country = await orgCountry()
+  const errors = validate(b, false, country, current.doc_type)
   if (errors.length) return fail(res, errors.join('. '), 400)
-  const patch = rowFrom(b)
+  const patch = rowFrom({ ...b, docType: b.docType || current.doc_type }, country)
   if (patch.utility_bill_url && patch.utility_bill_url !== current.utility_bill_url) patch.utility_bill_at = new Date().toISOString()
   if (req.user.role === 'administrador') {
     const lenderId = await checkLender(b.lenderId)
@@ -273,13 +279,13 @@ router.post('/clientes/:id/usuario', auth(ADMIN), h(async (req, res) => {
   const password = String(c.identification)
   let user
   if (c.user_id) {
-    const patch = { username, identification: c.identification, active: req.body?.active !== false, password_hash: await bcrypt.hash(password, 10) }
+    const patch = { username, identification: c.identification, doc_type: c.doc_type, active: req.body?.active !== false, password_hash: await bcrypt.hash(password, 10) }
     const { data, error } = await supabase.from('users').update(patch).eq('id', c.user_id).select(USER_COLUMNS).single()
     if (error) return error.code === '23505' ? fail(res, 'Ese nombre de usuario ya existe', 409) : fail(res, error)
     user = data
   } else {
     const { data, error } = await supabase.from('users').insert({
-      identification: c.identification, name: c.name, last_name: c.last_name, username, email: c.email, phone: c.phone,
+      identification: c.identification, doc_type: c.doc_type, name: c.name, last_name: c.last_name, username, email: c.email, phone: c.phone,
       role: 'cliente', password_hash: await bcrypt.hash(password, 10), avatar_url: c.photo_thumb
     }).select(USER_COLUMNS).single()
     if (error) return error.code === '23505' ? fail(res, String(error.message).includes('username') ? 'Ese nombre de usuario ya existe' : 'Ya existe un usuario con esa identificación', 409) : fail(res, error)

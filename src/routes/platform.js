@@ -12,6 +12,8 @@ const supabase = require('../db')
 const plan = require('../plan')
 const { JWT_SECRET } = require('../config')
 const { h, fail, clean, EMAIL_RE, PHONE_RE, DOC_RE, HttpError } = require('../http')
+const { isValidPhone, phoneMessage, phoneRule, digitsText } = require('../lib/phones')
+const { docTypesFor, defaultDocType, isValidDocType } = require('../lib/docTypes')
 const { auth, ADMIN, ALL } = require('../auth')
 const { currentOrg, runAsOrg } = require('../tenant')
 const { audit } = require('../audit')
@@ -28,7 +30,7 @@ const intOrNull = (v, min, label) => {
   if (!Number.isInteger(n) || n < min) throw new HttpError(`${label}: escribe un número entero desde ${min} o déjalo vacío para ilimitado`)
   return n
 }
-const countryDTO = (c) => ({ code: c.code, name: c.name, currency: c.currency, currencyName: c.currency_name, locale: c.locale, timezone: c.timezone, phonePrefix: c.phone_prefix, active: c.active, sortOrder: c.sort_order })
+const countryDTO = (c) => ({ code: c.code, name: c.name, currency: c.currency, currencyName: c.currency_name, locale: c.locale, timezone: c.timezone, phonePrefix: c.phone_prefix, active: c.active, sortOrder: c.sort_order, docTypes: docTypesFor(c.code), phone: phoneRule(c.code) })
 const featureDTO = (f) => ({ key: f.key, label: f.label, group: f.grp, description: f.description, core: f.core, sortOrder: f.sort_order })
 const planDTO = (p, prices = []) => ({
   id: p.id,
@@ -305,10 +307,11 @@ router.post('/plataforma/organizaciones', pauth, h(async (req, res) => {
   const a = b.admin || {}
   const errs = []
   if (!DOC_RE.test(String(clean(a.identification) || ''))) errs.push('Documento del administrador no válido')
+  if (a.docType && !isValidDocType(a.docType, country?.code)) errs.push('Tipo de documento del administrador no válido para el país')
   if (!clean(a.name)) errs.push('Nombre del administrador requerido')
   if (!/^[a-z0-9._-]{3,30}$/.test(String(clean(a.username) || '').toLowerCase())) errs.push('Usuario del administrador: 3 a 30 letras, números, punto o guion')
   if (clean(a.email) && !EMAIL_RE.test(clean(a.email))) errs.push('Correo del administrador no válido')
-  if (clean(a.phone) && !PHONE_RE.test(clean(a.phone))) errs.push('Teléfono del administrador no válido (7 a 10 dígitos)')
+  if (clean(a.phone) && !isValidPhone(clean(a.phone), country?.code)) errs.push(phoneMessage(country?.code, 'Teléfono del administrador'))
   if (errs.length) return fail(res, errs.join('. '), 400)
   const username = clean(a.username).toLowerCase()
   const { data: taken } = await supabase.from('users').select('id').eq('username', username).maybeSingle()
@@ -326,6 +329,7 @@ router.post('/plataforma/organizaciones', pauth, h(async (req, res) => {
     must(await supabase.from('app_settings').insert({ org_id: org.id, business_name: org.name, short_name: org.name.slice(0, 20), currency: country.currency, timezone: country.timezone }))
     must(await supabase.from('users').insert({
       org_id: org.id,
+      doc_type: a.docType || defaultDocType(country.code),
       identification: clean(a.identification),
       name: clean(a.name),
       last_name: clean(a.lastName) || '',
@@ -504,7 +508,7 @@ router.post('/plan/solicitud', auth(ADMIN), h(async (req, res) => {
   const st = await plan.ensure(org)
   const { data: target } = await supabase.from('plans').select('id, name, active').eq('id', Number(b.planId)).maybeSingle()
   if (!target || !target.active) return fail(res, 'Selecciona un plan disponible', 400)
-  if (clean(b.phone) && !PHONE_RE.test(clean(b.phone))) return fail(res, 'Teléfono no válido (7 a 10 dígitos)', 400)
+  if (clean(b.phone) && !isValidPhone(clean(b.phone), st.country?.code)) return fail(res, phoneMessage(st.country?.code, 'Teléfono'), 400)
   const { data: open } = await supabase.from('plan_requests').select('id').eq('org_id', org).in('status', ['pendiente', 'contactado']).limit(1).maybeSingle()
   if (open) return fail(res, 'Ya tienes una solicitud en curso. QuontUp360 te contactará pronto.', 409)
   const data = must(await supabase.from('plan_requests').insert({

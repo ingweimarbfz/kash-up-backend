@@ -4,10 +4,11 @@ const { currentOrg } = require('../tenant')
 const plan = require('../plan')
 const { availableFor } = require('./funds')
 const { h, fail, clean, PHONE_RE, todayBogota } = require('../http')
+const { isValidPhone, phoneMessage, phoneRule, digitsText } = require('../lib/phones')
 const { bySite } = require('../site')
 const { auth, ADMIN, STAFF } = require('../auth')
 const { audit } = require('../audit')
-const { buildSchedule, suggestFirstDue, intervalDays } = require('../lib/schedule')
+const { buildSchedule, suggestFirstDue, intervalDays, roundStepFor } = require('../lib/schedule')
 const { bestFor, loadActive } = require('../promo')
 
 const router = express.Router()
@@ -106,7 +107,7 @@ const prepare = async (req, b) => {
   const firstDueDate = b.firstDueDate || suggestFirstDue(disbursementDate, b.frequency, b.customDays, b.skipSundays)
   const schedule = buildSchedule({
     principal, method: rateInfo.method, rate: rateInfo.rate, rateBasis: rateInfo.rateBasis, frequency: b.frequency, customDays: b.customDays,
-    count: Number(b.count), disbursementDate, firstDueDate, skipSundays: Boolean(b.skipSundays), roundTo: b.roundTo === undefined ? 100 : Number(b.roundTo)
+    count: Number(b.count), disbursementDate, firstDueDate, skipSundays: Boolean(b.skipSundays), roundTo: b.roundTo === undefined ? roundStepFor((await plan.ensure(currentOrg())).country?.currency) : Number(b.roundTo)
   })
   return { customer, items, warehouse, productsTotal, discount, discountAmount, downPayment, principal, rateInfo, disbursementDate, schedule }
 }
@@ -155,12 +156,12 @@ router.post('/creditos/simular', auth(STAFF), withBad(async (req, res) => {
   res.send({ funds, renewal, needsApproval, productsTotal: p.productsTotal, discountAmount: p.discountAmount, discountName: p.discount?.name ?? null, downPayment: p.downPayment, rate: p.rateInfo, ...p.schedule })
 }))
 
-const validRefs = (b) => {
+const validRefs = (b, country) => {
   const refs = (Array.isArray(b.references) ? b.references : []).map((r) => ({ name: clean(r.name), phone: clean(r.phone), relationship: clean(r.relationship), address: clean(r.address) })).filter((r) => r.name || r.phone)
   if (!refs.length) throw new Bad('Agrega al menos una referencia personal')
   for (const r of refs) {
     if (!r.name || !r.phone) throw new Bad('Cada referencia necesita nombre y celular')
-    if (!PHONE_RE.test(r.phone)) throw new Bad(`Celular de la referencia ${r.name} no válido`)
+    if (!isValidPhone(r.phone, country)) throw new Bad(`Celular de la referencia ${r.name} no válido (${digitsText(phoneRule(country))}, sin el indicativo del país)`)
   }
   return refs
 }
@@ -174,7 +175,7 @@ const activeCredits = async (customerId) => {
 // Crea el crédito. Con `approval` se crea a partir de una solicitud aprobada por el administrador.
 const createCredit = async (req, b, approval = null) => {
   if (b.kind === 'producto' && !plan.has(await plan.ensure(currentOrg()), 'productos')) throw new Bad('Tu plan no incluye créditos de productos')
-  const refs = validRefs(b)
+  const refs = validRefs(b, (await plan.ensure(currentOrg())).country?.code)
   const p = await prepare(req, b)
   let lenderId = resolveLender(req, b, p.customer)
   if (lenderId && req.user.role === 'administrador') {
