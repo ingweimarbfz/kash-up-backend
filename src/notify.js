@@ -223,9 +223,13 @@ const changeRequest = async (detail, action, req, creditId = null) => {
   const f = action === 'aprobar' ? detail?.dates?.[0] : detail?.first
   const moved = detail?.moved || 0
   const dates = f ? `\n📅 Cuota ${f.n}: ${fmtDate(f.from)} → ${fmtDate(f.to)}${moved > 1 ? ` (y ${moved - 1} siguiente${moved - 1 === 1 ? '' : 's'})` : ''}` : ''
-  const head = { solicitar: '🙋 <b>SOLICITUD DE CAMBIO DE FECHA</b>', aprobar: '✅ <b>CAMBIO DE FECHA APROBADO</b>', rechazar: '⛔ <b>CAMBIO DE FECHA RECHAZADO</b>' }[action]
+  const other = detail?.kind === 'otro'
+  const topic = { valor: 'cambiar el valor', interes: 'cambiar el interés', cuotas: 'cambiar el número de cuotas', otro: 'otro cambio' }[detail?.topic] || 'otro cambio'
+  const head = other
+    ? { solicitar: '🙋 <b>SOLICITUD DE CAMBIO EN CRÉDITO</b>', rechazar: '⛔ <b>SOLICITUD DE CAMBIO RECHAZADA</b>' }[action]
+    : { solicitar: '🙋 <b>SOLICITUD DE CAMBIO DE FECHA</b>', aprobar: '✅ <b>CAMBIO DE FECHA APROBADO</b>', rechazar: '⛔ <b>CAMBIO DE FECHA RECHAZADO</b>' }[action]
   return { siteId: site.id, path: `/creditos/${creditId || detail?.credit}`,
-    html: `${head} · Crédito #${c.number}\n${SEP}\n👤 ${esc(fullName(c.customer))}${siteLine(site)}${dates}` +
+    html: `${head} · Crédito #${c.number}\n${SEP}\n👤 ${esc(fullName(c.customer))}${siteLine(site)}${other ? `\n✏️ Pide: ${topic}` : dates}` +
       (detail?.reason ? `\n📝 ${esc(detail.reason)}` : '') + (action === 'rechazar' && detail?.note ? `\n💬 ${esc(detail.note)}` : '') +
       (action === 'solicitar' ? `\n🧑‍💼 Pidió: ${byUser(req)}\n⏳ El administrador debe aprobarla o rechazarla en Solicitudes` : action === 'aprobar' ? `\n🧑‍💼 Pidió: ${esc(detail?.requestedBy || '')}\n👤 Aprobó: ${byUser(req)}` : `\n👤 ${byUser(req)}`) }
 }

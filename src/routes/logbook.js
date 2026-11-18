@@ -35,8 +35,8 @@ const KINDS = {
   'aprobar:credito': ['credito', 'Solicitud aprobada'],
   'anular:credito': ['credito', 'Crédito anulado'],
   'editar:credito': ['credito', 'Crédito editado'],
-  'solicitar:cambio_credito': ['credito', 'Pidió cambiar fecha de cobro'],
-  'rechazar:cambio_credito': ['credito', 'Cambio de fecha rechazado'],
+  'solicitar:cambio_credito': ['credito', 'Pidió un cambio en el crédito'],
+  'rechazar:cambio_credito': ['credito', 'Solicitud de cambio rechazada'],
   'solicitar:credito': ['credito', 'Solicitud de crédito'],
   'cancelar:solicitud_credito': ['credito', 'Solicitud cancelada'],
   'rechazar:solicitud_credito': ['credito', 'Solicitud rechazada'],
@@ -169,7 +169,8 @@ router.get('/bitacora', auth(ADMIN), h(async (req, res) => {
       const d = a.detail || {}
       const fmt = (iso) => (iso ? iso.split('-').reverse().join('/') : '—')
       if (x) Object.assign(e, { lenderId: x.lender_id ?? e.lenderId, ref: `#${x.number}` })
-      e.text = [fullName(x?.customer), d.first && `cuota ${d.first.n}: ${fmt(d.first.from)} → ${fmt(d.first.to)}${d.moved > 1 ? ` (y ${d.moved - 1} siguientes)` : ''}`, d.reason && `motivo: ${d.reason}`, d.note && `rechazo: ${d.note}`].filter(Boolean).join(' · ')
+      const topics = { valor: 'cambiar el valor', interes: 'cambiar el interés', cuotas: 'cambiar el número de cuotas', otro: 'otro cambio' }
+      e.text = [fullName(x?.customer), d.kind === 'otro' ? `pide: ${topics[d.topic] || 'otro cambio'}` : (a.action === 'solicitar' && 'cambio de fecha'), d.first && `cuota ${d.first.n}: ${fmt(d.first.from)} → ${fmt(d.first.to)}${d.moved > 1 ? ` (y ${d.moved - 1} siguientes)` : ''}`, d.reason && `motivo: ${d.reason}`, d.note && `rechazo: ${d.note}`].filter(Boolean).join(' · ')
       if (a.action === 'rechazar') e.flags.push('Cambio rechazado')
     } else if (a.entity === 'traslado_caja') {
       const x = find(trs, a.entity_id)
